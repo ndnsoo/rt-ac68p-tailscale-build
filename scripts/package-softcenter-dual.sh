@@ -36,6 +36,6 @@ GOARM：${GOARM}
 实现：GitHub Actions完成核心构建后直接注入完整Softcenter模板并生成可后台上传的tar.gz。
 存储策略：JFFS保底运行；ROUTERUSB存在时优先使用USB核心和详细日志；U盘拔出时切回JFFS核心和/tmp轻量状态日志。
 EOF
-PKG="Headscale_1.104.4-go1.27.3-armv${GOARM}-${FLAVOR}-dual-v6.tar.gz"
+PKG="Headscale_1.104.4-go1.27.3-armv${GOARM}-${FLAVOR}-dual-v7.tar.gz"
 tar -C "$ROOT/package-work" -czf "$OUT/$PKG" tailscale
 sha256sum "$OUT/$PKG" > "$OUT/$PKG.sha256"

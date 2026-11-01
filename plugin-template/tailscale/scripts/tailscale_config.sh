@@ -60,7 +60,7 @@ tailscale_start(){
 		if [ -z "$(pidof tailscaled)" ];then
 			/jffs/softcenter/bin/tailscaled --state="${STATE_DIR}/tailscaled.state" > "${RUN_LOG}" 2>&1 &
 		fi
-		args=" --login-server=${tailscale_login_server:-https://bb.776699.xyz} --hostname=${tailscale_hostname:-home-router-ac68u}"
+		args=" --netfilter-mode=off --login-server=${tailscale_login_server:-https://bb.776699.xyz} --hostname=${tailscale_hostname:-home-router-ac68u}"
 		if [ "$tailscale_advertise_routes" == "1" ];then
 			subnet=`nvram get lan_ipaddr`
 			subnet1=`echo $subnet |cut -d. -f1`
@@ -88,6 +88,8 @@ tailscale_start(){
 		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Start tailscale network connection"'`
 		echo_date "${msg}"
 		/jffs/softcenter/bin/tailscale up --accept-dns=false ${args} &
+		sleep 3
+		/jffs/softcenter/scripts/tailscale_legacy_firewall.sh start >/dev/null 2>&1
 		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Detect tailscale login status"'`
 		echo_date "${msg}"
 		sleep 4s #wait for tailscaled to receive reply
@@ -120,6 +122,7 @@ tailscale_stop(){
 		/jffs/softcenter/bin/tailscaled --cleanup >/dev/null 2>&1 
 		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Stop"'`
 		echo_date "${msg} tailscale"
+		/jffs/softcenter/scripts/tailscale_legacy_firewall.sh stop >/dev/null 2>&1
 		killall tailscale >/dev/null 2>&1 
 		killall tailscaled >/dev/null 2>&1 
 		rm -rf /tmp/var/lib/tailscale
