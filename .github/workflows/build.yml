@@ -1,0 +1,149 @@
+name: Build Tailscale for RT-AC68P (Linux 2.6.36 ARMv7)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tailscale_ref:
+        description: "Tailscale Git tag/commit. Default is a Go 1.23-era baseline."
+        required: true
+        default: "v1.78.3"
+        type: string
+      go_version:
+        description: "Go version. Keep 1.23.x for Linux 2.6.36 compatibility."
+        required: true
+        default: "1.23.12"
+        type: string
+      publish_release:
+        description: "Create a GitHub Release after a successful build"
+        required: true
+        default: false
+        type: boolean
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build.yml"
+      - "scripts/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rt-ac68p-${{ github.ref }}-${{ inputs.tailscale_ref || 'v1.78.3' }}
+  cancel-in-progress: false
+
+env:
+  TAILSCALE_REF: ${{ inputs.tailscale_ref || 'v1.78.3' }}
+  GO_VERSION: ${{ inputs.go_version || '1.23.12' }}
+  GOOS: linux
+  GOARCH: arm
+  GOARM: "7"
+  CGO_ENABLED: "0"
+  GOTOOLCHAIN: local
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v4
+
+      - name: Validate requested Go version
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$GO_VERSION" in
+            1.23|1.23.*) ;;
+            *)
+              echo "ERROR: This workflow intentionally permits only Go 1.23.x." >&2
+              echo "Linux 2.6.36 is below the Go 1.24+ minimum Linux kernel (3.2)." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Install Go 1.23
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Checkout Tailscale source at fixed ref
+        uses: actions/checkout@v4
+        with:
+          repository: tailscale/tailscale
+          ref: ${{ env.TAILSCALE_REF }}
+          path: tailscale-src
+          fetch-depth: 1
+
+      - name: Check source Go requirement
+        id: requirement
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          REQUIRED_GO="$(awk '$1=="go" {print $2; exit}' go.mod)"
+          echo "Tailscale ref: $TAILSCALE_REF"
+          echo "go.mod requires: $REQUIRED_GO"
+          echo "Builder Go: $(go env GOVERSION)"
+          printf '%s\n' "$REQUIRED_GO" | awk -F. '
+            {
+              major=$1+0; minor=$2+0;
+              if (major>1 || (major==1 && minor>23)) {
+                print "ERROR: Selected Tailscale source requires Go " $0 ", newer than Go 1.23." > "/dev/stderr";
+                print "Do not force-edit go.mod. Select an older Tailscale ref." > "/dev/stderr";
+                exit 1;
+              }
+            }'
+          echo "required_go=$REQUIRED_GO" >> "$GITHUB_OUTPUT"
+
+      - name: Download dependencies
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          go mod download
+          go mod verify
+
+      - name: Build ARMv7 static binaries with version metadata
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          ./build_dist.sh -o "$GITHUB_WORKSPACE/dist/tailscale" tailscale.com/cmd/tailscale
+          ./build_dist.sh -o "$GITHUB_WORKSPACE/dist/tailscaled" tailscale.com/cmd/tailscaled
+
+      - name: Verify binaries and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/verify-and-package.sh
+          scripts/verify-and-package.sh \
+            "$GITHUB_WORKSPACE/dist" \
+            "$GITHUB_WORKSPACE/tailscale-src" \
+            "$TAILSCALE_REF" \
+            "$GO_VERSION"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscale-${{ env.TAILSCALE_REF }}-go${{ env.GO_VERSION }}-linux-armv7-rt-ac68p
+          path: |
+            out/*.tar.gz
+            out/*.sha256
+            out/build-info.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: rt-ac68p-${{ env.TAILSCALE_REF }}-go${{ env.GO_VERSION }}-${{ github.run_number }}
+          name: RT-AC68P Tailscale ${{ env.TAILSCALE_REF }} / Go ${{ env.GO_VERSION }}
+          body_path: out/build-info.txt
+          files: |
+            out/*.tar.gz
+            out/*.sha256
+          fail_on_unmatched_files: true
