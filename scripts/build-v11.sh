@@ -16,5 +16,5 @@ fi
 variants="$MODE"; [ "$MODE" = all ] && variants='usb-hs3 legacy-runtime combo-core'
 cd "$ROOT"
 for v in $variants; do
- "$ROOT/scripts/package-softcenter-v11.sh" "$DIST" "$v" "$GOARMV" "$ROOT" "$REF" "$GOV"
+ bash "$ROOT/scripts/package-softcenter-v11.sh" "$DIST" "$v" "$GOARMV" "$ROOT" "$REF" "$GOV"
 done

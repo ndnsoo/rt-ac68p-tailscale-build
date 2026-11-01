@@ -54,6 +54,15 @@ jobs:
           ref: ${{ env.TAILSCALE_REF }}
           path: tailscale-src
           fetch-depth: 1
+      - name: Normalize script permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 755 scripts/*.sh
+          chmod 755 plugin-template/tailscale/install.sh plugin-template/tailscale/uninstall.sh
+          chmod 755 plugin-template/tailscale/scripts/*.sh
+          chmod 755 plugin-overlays/legacy-runtime/scripts/*.sh
+
       - name: Verify source Go requirement
         shell: bash
         working-directory: tailscale-src
@@ -72,7 +81,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          scripts/build-v11.sh all "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/tailscale-src" "$TAILSCALE_REF" "$GO_VERSION" "$GOARM"
+          bash scripts/build-v11.sh all "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/tailscale-src" "$TAILSCALE_REF" "$GO_VERSION" "$GOARM"
       - name: Validate all three packages
         shell: bash
         run: |
@@ -114,6 +123,15 @@ jobs:
           ref: ${{ env.TAILSCALE_REF }}
           path: tailscale-src
           fetch-depth: 1
+      - name: Normalize script permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 755 scripts/*.sh
+          chmod 755 plugin-template/tailscale/install.sh plugin-template/tailscale/uninstall.sh
+          chmod 755 plugin-template/tailscale/scripts/*.sh
+          chmod 755 plugin-overlays/legacy-runtime/scripts/*.sh
+
       - name: Verify source Go requirement
         shell: bash
         working-directory: tailscale-src
@@ -131,7 +149,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          scripts/build-v11.sh "${{ matrix.variant }}" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/tailscale-src" "$TAILSCALE_REF" "$GO_VERSION" "$GOARM"
+          bash scripts/build-v11.sh "${{ matrix.variant }}" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/tailscale-src" "$TAILSCALE_REF" "$GO_VERSION" "$GOARM"
       - name: Validate selected package
         shell: bash
         run: |
