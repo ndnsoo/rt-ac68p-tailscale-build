@@ -1,0 +1,192 @@
+#!/bin/sh
+
+source /jffs/softcenter/scripts/base.sh
+eval `dbus export tailscale_`
+
+PID_FILE=/var/run/tailscaled.pid
+LOG_FILE=/tmp/upload/tailscale_log.txt
+LOCK_FILE=/var/lock/tailscaled.lock
+JSON_LANG=""
+date_format=""
+echo "" > $LOG_FILE
+
+set_lock() {
+	exec 1000>"$LOCK_FILE"
+	flock -x 1000
+}
+
+unset_lock() {
+	flock -u 1000
+	rm -rf "$LOCK_FILE"
+}
+
+get_lang(){
+	local json_file
+	case  $(nvram get preferred_lang) in
+		CN)
+			json_file=tailscaleCN.json
+			date_format=%Y年%m月%d日
+		;;
+		TW)
+			json_file=tailscaleTW.json
+			date_format=%Y年%m月%d日
+		;;
+		*)
+			json_file=tailscaleEN.json
+			date_format=%Y/%m/%d
+		;;
+	esac
+	JSON_LANG=`cat /jffs/softcenter/res/${json_file}`
+}
+alias echo_date='echo [$(date -R +${date_format}\ %X)]:'
+tailscale_start(){
+	local subnet subnet1 subnet2 subnet3 args msg
+	if [ "$tailscale_enable" == "1" ];then
+		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Start"'`
+		echo_date "${msg} tailscaled"
+		USBROOT="/tmp/mnt/ROUTERUSB"
+		SWAPFILE="${USBROOT}/tailscale-swapfile"
+		[ -f "${SWAPFILE}" ] && { grep -q "${SWAPFILE}" /proc/swaps || /sbin/swapon "${SWAPFILE}" 2>/dev/null; }
+		RUN_LOG=$(/jffs/softcenter/scripts/tailscale_storage.sh select)
+		STATE_DIR=/jffs/softcenter/etc/tailscale
+		mkdir -p "${STATE_DIR}" /tmp/var/lib /tmp/tailscale-status
+		# Old ARM router memory guard. Keep normal behavior while limiting runaway Go heap growth.
+		export GOMEMLIMIT=96MiB
+		export GOGC=50
+		rm -rf /tmp/var/lib/tailscale
+		ln -sf "${STATE_DIR}" /tmp/var/lib/tailscale
+		/jffs/softcenter/bin/tailscaled --cleanup
+		/jffs/softcenter/bin/tailscaled --state="${STATE_DIR}/tailscaled.state" > "${RUN_LOG}" 2>&1 &
+		if [ -z "$(pidof tailscaled)" ];then
+			/jffs/softcenter/bin/tailscaled --state="${STATE_DIR}/tailscaled.state" > "${RUN_LOG}" 2>&1 &
+		fi
+		args=" --login-server=${tailscale_login_server:-https://bb.776699.xyz} --hostname=${tailscale_hostname:-home-router-ac68u}"
+		if [ "$tailscale_advertise_routes" == "1" ];then
+			subnet=`nvram get lan_ipaddr`
+			subnet1=`echo $subnet |cut -d. -f1`
+			subnet2=`echo $subnet |cut -d. -f2`
+			subnet3=`echo $subnet |cut -d. -f3`
+			subnet="${subnet1}.${subnet2}.${subnet3}.0/24"
+			args=" --advertise-routes=${subnet}"
+			msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Advertise routing is enabled"'`
+			echo_date "${msg}"
+		fi
+		if [ "$tailscale_accept_routes" == "1" ];then
+			args="${args} --accept-routes=true"
+			msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Accept routing is enabled"'`
+			echo_date "${msg}"
+		fi
+		if [ "$tailscale_exit_node" == "1" ];then
+			args="${args} --advertise-exit-node"
+			args="${args} --exit-node-allow-lan-access=true"
+			msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Exit node is enabled"'`
+			echo_date "${msg}"
+		fi
+#		if [ "$tailscale_lan_access" == "1" ];then
+#			args="${args} --exit-node-allow-lan-access"
+#		fi
+		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Start tailscale network connection"'`
+		echo_date "${msg}"
+		/jffs/softcenter/bin/tailscale up --accept-dns=false ${args} &
+		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Detect tailscale login status"'`
+		echo_date "${msg}"
+		sleep 4s #wait for tailscaled to receive reply
+		check_login_status
+		if [ "0" == "1" ];then
+			/jffs/softcenter/bin/tailscale set --auto_update
+			msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Auto update is enabled"'`
+			echo_date "${msg}"
+		fi
+#		if [ "$tailscale_ipv4_enable" == "0" ];then
+#		elif [ "$tailscale_ipv6_enable" == "0" ];then
+#		fi
+		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Setting dnsmasq for tailscale"'`
+		echo_date "${msg}"
+		echo "interface=tailscale*" > /etc/dnsmasq.user/ts.conf
+		echo "no-dhcp-interface=tailscale*" >> /etc/dnsmasq.user/ts.conf
+		service restart_dnsmasq 2>&1
+		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Tailscale startup completed"'`
+		echo_date "${msg}"
+		/jffs/softcenter/scripts/tailscale_redirect.sh &
+	fi
+}
+
+tailscale_stop(){
+#	/jffs/softcenter/bin/tailscale down &
+	if [ -n "$(pidof tailscaled)" ];then
+		local msg
+		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Stop tailscale network connection"'`
+		echo_date "${msg}"
+		/jffs/softcenter/bin/tailscaled --cleanup >/dev/null 2>&1 
+		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Stop"'`
+		echo_date "${msg} tailscale"
+		killall tailscale >/dev/null 2>&1 
+		killall tailscaled >/dev/null 2>&1 
+		rm -rf /tmp/var/lib/tailscale
+#		dbus set tailscale_online=0
+	fi
+}
+
+check_login_status(){
+	local status info_all msg authurl
+	info_all=`/jffs/softcenter/bin/tailscale status --json`
+	status=`echo ${info_all} | /jffs/softcenter/bin/jq -r .BackendState`
+	if [ "$status" == "NoState" -o "$status" == "Stopped" ]; then
+		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Tailscale cannot connect to the server"'`
+		echo_date "${msg}"
+	elif [ "$status" == "NeedsLogin" -o "$status" == "NeedsMachineAuth" ]; then
+		authurl=`echo ${info_all} | /jffs/softcenter/bin/jq -r .AuthURL`
+		authurl=${authurl##*/}
+		if [ -z "${authurl}" ];then
+			info_all=`/jffs/softcenter/bin/tailscale status --json`
+			authurl=`echo ${info_all} | /jffs/softcenter/bin/jq -r .AuthURL`
+			authurl=${authurl##*/}
+		fi
+		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Open web site"' | sed 's/router/'"${authurl}"'/g'`
+		echo_date "${msg}"
+	else
+		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Tailscale has joined the network"'`
+		echo_date "${msg}"
+	fi
+}
+
+case $1 in
+start)
+		set_lock
+		get_lang
+		tailscale_stop >> $LOG_FILE
+		tailscale_start >> $LOG_FILE
+		echo XU6J03M6 >> $LOG_FILE
+		unset_lock
+        ;;
+start_nat)
+		set_lock
+		get_lang
+		tailscale_stop >> $LOG_FILE
+		tailscale_start >> $LOG_FILE
+		echo XU6J03M6 >> $LOG_FILE
+		unset_lock
+        ;;
+stop)
+		get_lang
+		tailscale_stop >> $LOG_FILE
+		echo XU6J03M6 >> $LOG_FILE
+        ;;
+esac
+
+case $2 in
+# check_login)
+#		check_login_status >> $LOG_FILE
+#        ;;
+
+web_submit)
+		set_lock
+		get_lang
+		http_response $1
+		tailscale_stop >> $LOG_FILE
+		tailscale_start >> $LOG_FILE
+		echo XU6J03M6 >> $LOG_FILE
+		unset_lock
+        ;;
+esac
+

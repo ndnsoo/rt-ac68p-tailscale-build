@@ -1,0 +1,27 @@
+2026-11-01 hs5 完全适配精简版
+
+基线：Headscale_1.104.4-hs3.tar.gz。
+核心来源：GitHub Actions构建的Tailscale v1.78.3，提交1b41fdeddb6598b35ba15cc6b07740e0cc0e8411，Go 1.23.12，linux/arm，GOARM=7，CGO_ENABLED=0。
+
+累计修改：
+1. 保留hs3完整Softcenter结构、Web UI、三语言、Headscale地址、节点名、DNS拒绝、子网路由、接受路由、Exit Node、USB状态和日志。
+2. 核心使用llvm-strip移除调试和符号表，不使用UPX。
+3. tailscaled设置GOMEMLIMIT=96MiB、GOGC=50限制Go堆异常增长。
+4. 安装前备份当前USB核心到tailscale/backups/pre-hs5-时间戳。
+5. 安装时用独立bootstrap脚本安全合并services-start标记块，不覆盖用户原有内容。
+6. 开机启用已有1GB Swap并设置swappiness=10。
+7. 开机等待30秒，确认插件开关和Swap后补启动，pidof防重复。
+8. cru每5分钟运行TailscaleWatchdog。
+9. 守护检查插件开关、EXT4、状态文件、核心、Swap与进程。
+10. 进程消失时保存内存、Swap、挂载、进程、IPv4/IPv6路由、dmesg、syslog和Tailscale日志，再自动拉起。
+11. 守护目录锁防并发，日志限制262144字节并保留一份轮转。
+12. tailscale_rollback.sh恢复最近一次pre-hs5核心备份。
+13. 卸载移除定时任务和services-start标记块，保留USB状态、日志和备份。
+14. 自动更新强制关闭。
+
+验证：全部Shell脚本sh -n通过；核心为ELF 32-bit ARM EABI5静态链接；归档顶层为tailscale/；未使用UPX。
+
+2026-11-01 hs5r1 重新完整生成
+用户反馈：上一个生成任务疑似界面卡住，要求从头重新交付。
+本次处理：使用已验证的HS5完整目录重新复制到唯一版本目录，重新计算相对路径核心SHA-256，重新执行全部Shell语法检查，重新打包并进行干净解压复核。
+未删除HS3/HS5的任何已有功能；版本号更新为0.1.5-hs5r1-ts1.78.3-go1.23.12。

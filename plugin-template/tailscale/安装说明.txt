@@ -1,0 +1,12 @@
+Headscale/Tailscale 梅林软件中心完整适配精简包
+版本：0.1.5-hs5-ts1.78.3-go1.23.12
+
+完整保留 hs3 的 Web UI、语言文件、Headscale、子网路由、USB状态与日志结构。
+新增：非UPX精简核心、Go内存限制、Swap/swappiness持久化、开机延迟启动、每5分钟守护、崩溃快照、核心备份与一键回退。
+
+安装：软件中心 -> 离线安装 -> 上传本tar.gz。
+回退：SSH执行 /jffs/softcenter/scripts/tailscale_rollback.sh
+故障快照：/tmp/mnt/ROUTERUSB/tailscale/logs/failure-时间戳.log
+守护日志：/tmp/mnt/ROUTERUSB/tailscale/logs/watchdog.log
+
+安装器不会删除 tailscaled.state。自动更新仍强制关闭。
