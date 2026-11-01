@@ -72,8 +72,8 @@ jobs:
             echo "Commit: $(git -C tailscale-src rev-parse HEAD)"
             echo "Requested Go: $GO_VERSION"
             echo "Actual Go: $(go version)"
-            echo "Original go directive: $(awk '$1==\"go\" {print $2; exit}' tailscale-src/go.mod)"
-            echo "Original toolchain directive: $(awk '$1==\"toolchain\" {print $2; exit}' tailscale-src/go.mod)"
+            echo "Original go directive: $(awk '$1=="go" {print $2; exit}' tailscale-src/go.mod)"
+            echo "Original toolchain directive: $(awk '$1=="toolchain" {print $2; exit}' tailscale-src/go.mod)"
             echo "Target: GOOS=$GOOS GOARCH=$GOARCH GOARM=$GOARM CGO_ENABLED=$CGO_ENABLED"
           } | tee diagnostics/environment.txt
           cp tailscale-src/go.mod diagnostics/go.mod.original
@@ -97,6 +97,15 @@ jobs:
           cp go.mod "$GITHUB_WORKSPACE/diagnostics/go.mod.before-force"
           sed -i -E 's/^go .*/go 1.23.0/' go.mod
           sed -i -E '/^toolchain /d' go.mod
+          # Go 1.23 cannot parse the Go 1.24+ top-level tool (...) block.
+          # Remove only that module-tool declaration in the temporary runner copy.
+          awk '
+            BEGIN { in_tool=0 }
+            /^tool[[:space:]]*\([[:space:]]*$/ { in_tool=1; next }
+            in_tool && /^[[:space:]]*\)[[:space:]]*$/ { in_tool=0; next }
+            !in_tool { print }
+          ' go.mod > go.mod.go123
+          mv go.mod.go123 go.mod
           cp go.mod "$GITHUB_WORKSPACE/diagnostics/go.mod.forced-go123"
           echo "WARNING: go.mod was changed only inside this temporary runner." | tee "$GITHUB_WORKSPACE/diagnostics/force-warning.txt"
           echo "The upstream source repository and user repository are not modified." | tee -a "$GITHUB_WORKSPACE/diagnostics/force-warning.txt"
