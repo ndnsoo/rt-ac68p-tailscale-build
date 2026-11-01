@@ -44,35 +44,25 @@ tailscale_start(){
 	if [ "$tailscale_enable" == "1" ];then
 		msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Start"'`
 		echo_date "${msg} tailscaled"
-		RUN_LOG=$(/jffs/softcenter/scripts/tailscale_storage.sh select)
-		if [ -f /jffs/softcenter/configs/tailscale_usb_only ]; then
-			STATE_DIR=/tmp/mnt/ROUTERUSB/tailscale/state
-			[ -d /tmp/mnt/ROUTERUSB/tailscale/bin ] || { echo_date "U盘未挂载，USB版无法启动。"; return 1; }
-		else
-			STATE_DIR=/jffs/softcenter/etc/tailscale
-		fi
-		SWAPFILE=/tmp/mnt/ROUTERUSB/tailscale-swapfile
-		[ -f "$SWAPFILE" ] && { grep -q "$SWAPFILE" /proc/swaps || swapon "$SWAPFILE" 2>/dev/null; }
-		mkdir -p "$STATE_DIR" /tmp/var/lib /tmp/tailscale-status
-		export GOMEMLIMIT=96MiB
-		export GOGC=50
-		rm -rf /tmp/var/lib/tailscale
-		ln -sf "$STATE_DIR" /tmp/var/lib/tailscale
 		USBROOT="/tmp/mnt/ROUTERUSB"
 		USBTS="${USBROOT}/tailscale"
 		SWAPFILE="${USBROOT}/tailscale-swapfile"
-		if [ ! -d "${USBTS}/bin" ]; then
-			echo_date "未找到U盘Tailscale目录：${USBTS}/bin"
-			return 1
+		RUN_LOG=$(/jffs/softcenter/scripts/tailscale_storage.sh select) || return 1
+		if [ -f /jffs/softcenter/configs/tailscale_usb_only ]; then
+			STATE_DIR="${USBTS}/state"
+		else
+			STATE_DIR=/jffs/softcenter/etc/tailscale
 		fi
-		grep -q "${SWAPFILE}" /proc/swaps || /sbin/swapon "${SWAPFILE}" 2>/dev/null
-		mkdir -p "${USBTS}/state" "${USBTS}/logs" /tmp/var/lib
+		[ -f "${SWAPFILE}" ] && { grep -q "${SWAPFILE}" /proc/swaps || /sbin/swapon "${SWAPFILE}" 2>/dev/null; }
+		mkdir -p "${STATE_DIR}" "${USBTS}/logs" /tmp/var/lib /tmp/tailscale-status
+		export GOMEMLIMIT=96MiB
+		export GOGC=50
 		rm -rf /tmp/var/lib/tailscale
-		ln -sf "${USBTS}/state" /tmp/var/lib/tailscale
+		ln -sf "${STATE_DIR}" /tmp/var/lib/tailscale
 		/jffs/softcenter/bin/tailscaled --cleanup
-		/jffs/softcenter/bin/tailscaled --state="$STATE_DIR/tailscaled.state" > "$RUN_LOG" 2>&1 &
+		/jffs/softcenter/bin/tailscaled --state="${STATE_DIR}/tailscaled.state" > "${RUN_LOG}" 2>&1 &
 		if [ -z "$(pidof tailscaled)" ];then
-			/jffs/softcenter/bin/tailscaled --state="$STATE_DIR/tailscaled.state" > "$RUN_LOG" 2>&1 &
+			/jffs/softcenter/bin/tailscaled --state="${STATE_DIR}/tailscaled.state" > "${RUN_LOG}" 2>&1 &
 		fi
 		args=" --login-server=${tailscale_login_server:-https://bb.776699.xyz} --hostname=${tailscale_hostname:-home-router-ac68u}"
 		if [ "$tailscale_advertise_routes" == "1" ];then

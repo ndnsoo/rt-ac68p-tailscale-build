@@ -97,65 +97,56 @@ install_now(){
 	echo_date "安装插件相关文件..."
 	cd /tmp
 
+	# v12 package-selected storage mechanism.
+	local USBROOT="/tmp/mnt/ROUTERUSB"
+	local USBTS="${USBROOT}/tailscale"
+	local SWAPFILE="${USBROOT}/tailscale-swapfile"
 	if [ -f /tmp/${module}/bin/.usb_only ]; then
-		local USBROOT=/tmp/mnt/ROUTERUSB
-		local USBTS=${USBROOT}/tailscale
-		local SWAPFILE=${USBROOT}/tailscale-swapfile
-		if [ ! -d "$USBROOT" ] || ! mount | grep -q " ${USBROOT} type ext4 "; then
+		if [ ! -d "${USBROOT}" ] || ! mount | grep -q " ${USBROOT} type ext4 "; then
 			echo_date "未检测到已挂载的EXT4 U盘：${USBROOT}，停止安装！"
 			exit_install 1
 		fi
-		if [ ! -f "$SWAPFILE" ]; then
-			echo_date "未检测到U盘Swap文件：${SWAPFILE}，停止安装！"
-			exit_install 1
+		[ -f "${SWAPFILE}" ] || { echo_date "未检测到U盘Swap文件！"; exit_install 1; }
+		grep -q "${SWAPFILE}" /proc/swaps || /sbin/swapon "${SWAPFILE}" 2>/dev/null || exit_install 1
+		local USBFREE=$(df -k "${USBROOT}" | awk 'NR==2 {print $4}')
+		[ -n "${USBFREE}" ] && [ "${USBFREE}" -ge 100000 ] || { echo_date "U盘空间不足100000KB！"; exit_install 1; }
+		mkdir -p "${USBTS}/bin" "${USBTS}/state" "${USBTS}/logs" "${USBTS}/backups/pre-v12-$(date +%Y%m%d-%H%M%S)"
+		if [ -f /tmp/${module}/bin/.combo ]; then
+			cp -f /tmp/${module}/bin/tailscale_combo "${USBTS}/bin/tailscale_combo" || exit_install 1
+			chmod 755 "${USBTS}/bin/tailscale_combo"
+			ln -sf "${USBTS}/bin/tailscale_combo" "${USBTS}/bin/tailscale"
+			ln -sf "${USBTS}/bin/tailscale_combo" "${USBTS}/bin/tailscaled"
+		else
+			cp -f /tmp/${module}/bin/tailscale "${USBTS}/bin/tailscale" || exit_install 1
+			cp -f /tmp/${module}/bin/tailscaled "${USBTS}/bin/tailscaled" || exit_install 1
+			chmod 755 "${USBTS}/bin/tailscale" "${USBTS}/bin/tailscaled"
 		fi
-		grep -q "$SWAPFILE" /proc/swaps || /sbin/swapon "$SWAPFILE" 2>/dev/null || { echo_date "启用Swap失败！"; exit_install 1; }
-		local USBFREE=$(df -k "$USBROOT" | awk 'NR==2 {print $4}')
-		if [ -z "$USBFREE" ] || [ "$USBFREE" -lt 100000 ]; then
-			echo_date "U盘可用空间不足100000KB，停止安装！"
-			exit_install 1
-		fi
-		mkdir -p "$USBTS/bin" "$USBTS/state" "$USBTS/logs" "$USBTS/backups/pre-v11-$(date +%Y%m%d-%H%M%S)"
-		cp -f /tmp/${module}/bin/tailscale "$USBTS/bin/tailscale" || exit_install 1
-		cp -f /tmp/${module}/bin/tailscaled "$USBTS/bin/tailscaled" || exit_install 1
-		chmod 755 "$USBTS/bin/tailscale" "$USBTS/bin/tailscaled"
 		rm -f /jffs/softcenter/bin/tailscale /jffs/softcenter/bin/tailscaled
-		ln -sf "$USBTS/bin/tailscale" /jffs/softcenter/bin/tailscale
-		ln -sf "$USBTS/bin/tailscaled" /jffs/softcenter/bin/tailscaled
-		# Marker controls config/storage scripts so this package retains the HS3 USB-only mechanism.
+		ln -sf "${USBTS}/bin/tailscale" /jffs/softcenter/bin/tailscale
+		ln -sf "${USBTS}/bin/tailscaled" /jffs/softcenter/bin/tailscaled
 		touch /jffs/softcenter/configs/tailscale_usb_only
 	else
-		# v10 dual storage, user-selected 32MB minimum JFFS free space.
 		local JCORE=/jffs/softcenter/tailscale-core
 		local JSTATE=/jffs/softcenter/etc/tailscale
-		local USBROOT=/tmp/mnt/ROUTERUSB
-		local USBTS=${USBROOT}/tailscale
 		local JFREE=$(df -k /jffs | awk 'NR==2 {print $4}')
-		if [ -z "$JFREE" ] || [ "$JFREE" -lt 32000 ]; then
-			echo_date "JFFS可用空间不足32MB，停止安装！"
-			exit_install 1
-		fi
-		mkdir -p "$JCORE" "$JSTATE"
+		[ -n "${JFREE}" ] && [ "${JFREE}" -ge 32000 ] || { echo_date "JFFS可用空间不足32MB！"; exit_install 1; }
+		mkdir -p "${JCORE}" "${JSTATE}"
 		if mount | grep -q " ${USBROOT} type ext4 "; then
-			local BACKUP_DIR="$USBTS/backups/pre-v10-$(date +%Y%m%d-%H%M%S)"
-			mkdir -p "$USBTS/bin" "$USBTS/state" "$USBTS/logs" "$USBTS/backups" "$BACKUP_DIR"
-			[ -x /jffs/softcenter/bin/tailscale ] && cp -Lpf /jffs/softcenter/bin/tailscale "$BACKUP_DIR/tailscale" 2>/dev/null
-			[ -x /jffs/softcenter/bin/tailscaled ] && cp -Lpf /jffs/softcenter/bin/tailscaled "$BACKUP_DIR/tailscaled" 2>/dev/null
-			[ -x "$JCORE/tailscale_combo" ] && cp -pf "$JCORE/tailscale_combo" "$BACKUP_DIR/tailscale_combo" 2>/dev/null
-			[ -f "$USBTS/state/tailscaled.state" ] && [ ! -f "$JSTATE/tailscaled.state" ] && cp -pf "$USBTS/state/tailscaled.state" "$JSTATE/tailscaled.state"
+			local BACKUP_DIR="${USBTS}/backups/pre-v12-$(date +%Y%m%d-%H%M%S)"
+			mkdir -p "${USBTS}/bin" "${USBTS}/state" "${USBTS}/logs" "${BACKUP_DIR}"
+			[ -f "${USBTS}/state/tailscaled.state" ] && [ ! -f "${JSTATE}/tailscaled.state" ] && cp -pf "${USBTS}/state/tailscaled.state" "${JSTATE}/tailscaled.state"
 		fi
-		rm -f "$JCORE/tailscale" "$JCORE/tailscaled" "$JCORE/tailscale_combo"
+		rm -f "${JCORE}/tailscale" "${JCORE}/tailscaled" "${JCORE}/tailscale_combo"
 		if [ -f /tmp/${module}/bin/.combo ]; then
-			cp -f /tmp/${module}/bin/tailscale_combo "$JCORE/tailscale_combo" || exit_install 1
-			chmod 755 "$JCORE/tailscale_combo"
-			ln -sf "$JCORE/tailscale_combo" "$JCORE/tailscale"
-			ln -sf "$JCORE/tailscale_combo" "$JCORE/tailscaled"
+			cp -f /tmp/${module}/bin/tailscale_combo "${JCORE}/tailscale_combo" || exit_install 1
+			chmod 755 "${JCORE}/tailscale_combo"
+			ln -sf "${JCORE}/tailscale_combo" "${JCORE}/tailscale"
+			ln -sf "${JCORE}/tailscale_combo" "${JCORE}/tailscaled"
 		else
-			cp -f /tmp/${module}/bin/tailscale "$JCORE/tailscale" || exit_install 1
-			cp -f /tmp/${module}/bin/tailscaled "$JCORE/tailscaled" || exit_install 1
-			chmod 755 "$JCORE/tailscale" "$JCORE/tailscaled"
+			cp -f /tmp/${module}/bin/tailscale "${JCORE}/tailscale" || exit_install 1
+			cp -f /tmp/${module}/bin/tailscaled "${JCORE}/tailscaled" || exit_install 1
+			chmod 755 "${JCORE}/tailscale" "${JCORE}/tailscaled"
 		fi
-		rm -f /jffs/softcenter/bin/tailscale /jffs/softcenter/bin/tailscaled
 		rm -f /jffs/softcenter/configs/tailscale_usb_only
 	fi
 
@@ -169,7 +160,7 @@ install_now(){
 	chmod 755 /jffs/softcenter/bin/tailscale* >/dev/null 2>&1
 	chmod 755 /jffs/softcenter/scripts/tailscale*.sh >/dev/null 2>&1
 	/jffs/softcenter/scripts/tailscale_storage.sh select >/dev/null 2>&1 || true
-	/jffs/softcenter/scripts/tailscale_bootstrap.sh || { echo_date "写入启动守护失败"; exit_install 1; }
+	/jffs/softcenter/scripts/tailscale_bootstrap.sh || exit_install 1
 
 	# intall different UI
 	set_skin

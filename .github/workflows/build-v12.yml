@@ -1,0 +1,184 @@
+name: Build selectable Tailscale RT-AC68P six packages v12
+
+on:
+  workflow_dispatch:
+    inputs:
+      tailscale_ref:
+        description: "Tailscale tag, for example v1.104.4"
+        required: true
+        default: "v1.104.4"
+        type: string
+      go_version:
+        description: "Go version, for example 1.27.3"
+        required: true
+        default: "1.27.3"
+        type: string
+      goarm:
+        description: "ARM level"
+        required: true
+        default: "7"
+        type: choice
+        options: ["7", "5"]
+      job_mode:
+        description: "One Job creates all 6 packages, or six independent Jobs"
+        required: true
+        default: "one-job-all-six"
+        type: choice
+        options:
+          - one-job-all-six
+          - six-jobs
+
+permissions:
+  contents: read
+
+env:
+  TAILSCALE_REF: ${{ inputs.tailscale_ref }}
+  GO_VERSION: ${{ inputs.go_version }}
+  GOARM: ${{ inputs.goarm }}
+  GOTOOLCHAIN: local
+
+jobs:
+  all-six:
+    if: ${{ inputs.job_mode == 'one-job-all-six' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v5
+      - name: Normalize all script permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 755 scripts/*.sh
+          chmod 755 plugin-template/tailscale/install.sh plugin-template/tailscale/uninstall.sh
+          chmod 755 plugin-template/tailscale/scripts/*.sh
+          chmod 755 plugin-overlays/legacy/scripts/*.sh
+      - name: Install selected Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Checkout selected Tailscale source
+        uses: actions/checkout@v5
+        with:
+          repository: tailscale/tailscale
+          ref: ${{ env.TAILSCALE_REF }}
+          path: tailscale-src
+          fetch-depth: 1
+      - name: Verify source Go requirement
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          REQUIRED=$(awk '$1=="go" {print $2; exit}' go.mod)
+          python3 - "$REQUIRED" "$GO_VERSION" <<'PY'
+          import re, sys
+          def version(value):
+              numbers=[int(x) for x in re.findall(r'[0-9]+', value)[:3]]
+              return tuple(numbers + [0] * (3-len(numbers)))
+          print("required=", sys.argv[1], "selected=", sys.argv[2])
+          if version(sys.argv[2]) < version(sys.argv[1]):
+              raise SystemExit("selected Go is older than source requirement")
+          PY
+      - name: Build all six complete installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build-v12.sh all "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/tailscale-src" "$TAILSCALE_REF" "$GO_VERSION" "$GOARM"
+      - name: Validate all six complete installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find out-softcenter -maxdepth 1 -name '*.tar.gz' -type f | wc -l)" -eq 6
+          for package in out-softcenter/*.tar.gz; do
+            verify_dir=$(mktemp -d)
+            tar -xzf "$package" -C "$verify_dir"
+            test -f "$verify_dir/tailscale/webs/Module_tailscale.asp"
+            for script in "$verify_dir"/tailscale/install.sh "$verify_dir"/tailscale/uninstall.sh "$verify_dir"/tailscale/scripts/*.sh; do
+              sh -n "$script"
+            done
+            (cd "$verify_dir/tailscale" && sha256sum -c CORE-SHA256SUMS)
+            rm -rf "$verify_dir"
+          done
+      - name: Upload one Artifact containing all six packages
+        uses: actions/upload-artifact@v5
+        with:
+          name: tailscale-${{ env.TAILSCALE_REF }}-go${{ env.GO_VERSION }}-armv${{ env.GOARM }}-all-six-v12
+          path: |
+            out-softcenter/*.tar.gz
+            out-softcenter/*.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  six-separate:
+    if: ${{ inputs.job_mode == 'six-jobs' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [usb-upstream, usb-legacy, usb-combo, dual-upstream, dual-legacy, dual-combo]
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v5
+      - name: Normalize all script permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 755 scripts/*.sh
+          chmod 755 plugin-template/tailscale/install.sh plugin-template/tailscale/uninstall.sh
+          chmod 755 plugin-template/tailscale/scripts/*.sh
+          chmod 755 plugin-overlays/legacy/scripts/*.sh
+      - name: Install selected Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Checkout selected Tailscale source
+        uses: actions/checkout@v5
+        with:
+          repository: tailscale/tailscale
+          ref: ${{ env.TAILSCALE_REF }}
+          path: tailscale-src
+          fetch-depth: 1
+      - name: Verify source Go requirement
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          REQUIRED=$(awk '$1=="go" {print $2; exit}' go.mod)
+          python3 - "$REQUIRED" "$GO_VERSION" <<'PY'
+          import re, sys
+          def version(value):
+              numbers=[int(x) for x in re.findall(r'[0-9]+', value)[:3]]
+              return tuple(numbers + [0] * (3-len(numbers)))
+          if version(sys.argv[2]) < version(sys.argv[1]):
+              raise SystemExit("selected Go is older than source requirement")
+          PY
+      - name: Build selected complete installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build-v12.sh "${{ matrix.variant }}" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/tailscale-src" "$TAILSCALE_REF" "$GO_VERSION" "$GOARM"
+      - name: Validate selected complete installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          package=$(find out-softcenter -maxdepth 1 -name '*.tar.gz' -type f | head -n1)
+          test -n "$package"
+          verify_dir=$(mktemp -d)
+          tar -xzf "$package" -C "$verify_dir"
+          test -f "$verify_dir/tailscale/webs/Module_tailscale.asp"
+          for script in "$verify_dir"/tailscale/install.sh "$verify_dir"/tailscale/uninstall.sh "$verify_dir"/tailscale/scripts/*.sh; do
+            sh -n "$script"
+          done
+          (cd "$verify_dir/tailscale" && sha256sum -c CORE-SHA256SUMS)
+      - name: Upload selected package
+        uses: actions/upload-artifact@v5
+        with:
+          name: tailscale-${{ env.TAILSCALE_REF }}-go${{ env.GO_VERSION }}-armv${{ env.GOARM }}-${{ matrix.variant }}-v12
+          path: |
+            out-softcenter/*.tar.gz
+            out-softcenter/*.sha256
+          if-no-files-found: error
+          retention-days: 90
