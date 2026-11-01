@@ -23,7 +23,6 @@ $STORAGE sync-state >/dev/null 2>&1
 [ "$OLD_MODE" = "$NEW_MODE" ] || log "storage=$OLD_MODE->$NEW_MODE log=$RUN_LOG"
 
 if pidof tailscaled >/dev/null 2>&1; then
-    /jffs/softcenter/scripts/tailscale_legacy_firewall.sh start >/dev/null 2>&1
     IP=$(/jffs/softcenter/bin/tailscale ip -4 2>/dev/null | head -n1)
     STATE=$(/jffs/softcenter/bin/tailscale status --json 2>/dev/null | /jffs/softcenter/bin/jq -r '.BackendState // "unknown"' 2>/dev/null)
     log "status=running mode=$NEW_MODE pid=$(pidof tailscaled) ip=${IP:-none} backend=${STATE:-unknown}"

@@ -1,23 +1,16 @@
-# Tailscale v1.104.4 legacy runtime package for RT-AC68P
+# Selectable Tailscale RT-AC68P dual-job build v9
 
-This workflow builds the unmodified Tailscale v1.104.4 source with Go 1.27.3 and packages it with a Merlin/Softcenter Linux 2.6.36 runtime compatibility layer.
+The workflow accepts manually entered versions while keeping safe defaults:
 
-The previously referenced community patch file is malformed (`corrupt patch at line 66`) and is not applied. Instead, v7 adopts the community project's reliable operational approach without pretending to patch upstream source:
+- `tailscale_ref`: default `v1.104.4`
+- `go_version`: default `1.27.3`
+- `goarm`: default `7`
 
-- run Tailscale with `--netfilter-mode=off`;
-- maintain idempotent manual INPUT/FORWARD/MASQUERADE rules;
-- keep IP forwarding enabled;
-- re-check firewall rules every five minutes;
-- support JFFS fallback plus ROUTERUSB detailed logging;
-- build directly into a complete Softcenter offline installer.
+Before compilation, the workflow reads the selected Tailscale source `go.mod` and stops with a clear error if the manually selected Go version is older than the source requirement.
 
-Fixed build inputs:
+Two independent jobs are always created:
 
-- Tailscale `v1.104.4`
-- Go `1.27.3`
-- Linux ARM, default `GOARM=7`
-- `CGO_ENABLED=0`
-- no UPX
-- stripped with `-s -w`
+1. `upstream-router`: official Tailscale networking behavior plus Softcenter, dual-storage, memory, swap and watchdog adaptations.
+2. `legacy-runtime`: the same official source build, with runtime `--netfilter-mode=off`, manual legacy iptables rules and five-minute firewall repair added to the generated plugin package.
 
-The generated package remains an unofficial legacy-kernel build because Go 1.27 does not officially support Linux 2.6.36.
+Both jobs directly generate complete Softcenter offline installers with the selected versions embedded in the filename. No third-party source patch is applied.

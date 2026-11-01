@@ -1,15 +1,15 @@
-name: Build Tailscale v1.104.4 legacy runtime package
+name: Build selectable Tailscale for RT-AC68P dual jobs v9
 
 on:
   workflow_dispatch:
     inputs:
       tailscale_ref:
-        description: "Tailscale release tag"
+        description: "Tailscale release tag, for example v1.104.4"
         required: true
         default: "v1.104.4"
         type: string
       go_version:
-        description: "Go toolchain required by v1.104.4"
+        description: "Go toolchain to use, for example 1.27.3"
         required: true
         default: "1.27.3"
         type: string
@@ -24,7 +24,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: tailscale-v1104-legacy-${{ github.ref }}
+  group: tailscale-selectable-${{ github.ref }}-${{ inputs.tailscale_ref }}-go${{ inputs.go_version }}
   cancel-in-progress: false
 
 env:
@@ -40,34 +40,36 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      FLAVOR: legacy-runtime
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [upstream-router, legacy-runtime]
 
     steps:
       - name: Checkout build repository
         uses: actions/checkout@v5
 
-      - name: Validate fixed security release and toolchain
+      - name: Validate manual inputs
         shell: bash
         run: |
           set -euo pipefail
-          [ "$TAILSCALE_REF" = "v1.104.4" ] || {
-            echo "ERROR: This workflow intentionally builds only v1.104.4." >&2
-            exit 1
-          }
-          [ "$GO_VERSION" = "1.27.3" ] || {
-            echo "ERROR: Tailscale v1.104.4 is built with Go 1.27.3." >&2
-            exit 1
-          }
+          case "$TAILSCALE_REF" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "ERROR: tailscale_ref must look like v1.104.4" >&2; exit 1 ;;
+          esac
+          case "$GO_VERSION" in
+            1.[0-9]*|1.[0-9]*.[0-9]*) ;;
+            *) echo "ERROR: go_version must look like 1.27.3" >&2; exit 1 ;;
+          esac
           case "$GOARM" in 5|7) ;; *) exit 1 ;; esac
 
-      - name: Install Go 1.27.3
+      - name: Install selected Go toolchain
         uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: false
 
-      - name: Checkout Tailscale v1.104.4
+      - name: Checkout selected Tailscale source
         uses: actions/checkout@v5
         with:
           repository: tailscale/tailscale
@@ -81,15 +83,34 @@ jobs:
           set -euo pipefail
           mkdir -p diagnostics dist out
           {
-            echo "Flavor: ${{ env.FLAVOR }}"
+            echo "Flavor: ${{ matrix.flavor }}"
             echo "Tailscale ref: $TAILSCALE_REF"
             echo "Tailscale commit: $(git -C tailscale-src rev-parse HEAD)"
             echo "Go: $(go version)"
             echo "Target: GOOS=$GOOS GOARCH=$GOARCH GOARM=$GOARM CGO_ENABLED=$CGO_ENABLED"
             echo "go.mod: $(awk '$1=="go" {print $2; exit}' tailscale-src/go.mod)"
             uname -a
-          } | tee diagnostics/environment-${{ env.FLAVOR }}.txt
-          go version > diagnostics/go-version-${{ env.FLAVOR }}.txt
+          } | tee diagnostics/environment-${{ matrix.flavor }}.txt
+          go version > diagnostics/go-version-${{ matrix.flavor }}.txt
+
+      - name: Verify selected Go satisfies source requirement
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          REQUIRED_GO=$(awk '$1=="go" {print $2; exit}' go.mod)
+          [ -n "$REQUIRED_GO" ] || { echo "ERROR: go directive not found." >&2; exit 1; }
+          python3 - "$REQUIRED_GO" "$GO_VERSION" <<'PY'
+          import re, sys
+          def version(value):
+              nums=[int(x) for x in re.findall(r'\d+', value)[:3]]
+              return tuple(nums+[0]*(3-len(nums)))
+          required=version(sys.argv[1])
+          selected=version(sys.argv[2])
+          print(f"Source requires Go {sys.argv[1]}; selected Go is {sys.argv[2]}")
+          if selected < required:
+              raise SystemExit("ERROR: selected Go is older than the source go directive")
+          PY
 
       - name: Download and verify dependencies
         shell: bash
@@ -109,39 +130,38 @@ jobs:
             BUILD_TAGS="-tags=ts_include_cli"
           fi
           go build $BUILD_TAGS -trimpath -buildvcs=true -ldflags="-s -w" \
-            -o "$GITHUB_WORKSPACE/dist/tailscale-${{ env.FLAVOR }}" ./cmd/tailscale
+            -o "$GITHUB_WORKSPACE/dist/tailscale-${{ matrix.flavor }}" ./cmd/tailscale
           go build -trimpath -buildvcs=true -ldflags="-s -w" \
-            -o "$GITHUB_WORKSPACE/dist/tailscaled-${{ env.FLAVOR }}" ./cmd/tailscaled
+            -o "$GITHUB_WORKSPACE/dist/tailscaled-${{ matrix.flavor }}" ./cmd/tailscaled
 
       - name: Verify ELF ARM static binaries
         shell: bash
         run: |
           set -euo pipefail
           for name in tailscale tailscaled; do
-            file "dist/$name-${{ env.FLAVOR }}" | tee "diagnostics/$name-${{ env.FLAVOR }}.file.txt"
-            file "dist/$name-${{ env.FLAVOR }}" | grep -qi 'ELF 32-bit'
-            file "dist/$name-${{ env.FLAVOR }}" | grep -qi 'ARM'
-            if readelf -l "dist/$name-${{ env.FLAVOR }}" | grep -q 'Requesting program interpreter'; then
+            file "dist/$name-${{ matrix.flavor }}" | tee "diagnostics/$name-${{ matrix.flavor }}.file.txt"
+            file "dist/$name-${{ matrix.flavor }}" | grep -qi 'ELF 32-bit'
+            file "dist/$name-${{ matrix.flavor }}" | grep -qi 'ARM'
+            if readelf -l "dist/$name-${{ matrix.flavor }}" | grep -q 'Requesting program interpreter'; then
               echo "ERROR: $name is dynamically linked." >&2
               exit 1
             fi
-            go version -m "dist/$name-${{ env.FLAVOR }}" \
-              | tee "diagnostics/$name-${{ env.FLAVOR }}.gomod.txt"
+            go version -m "dist/$name-${{ matrix.flavor }}" \
+              | tee "diagnostics/$name-${{ matrix.flavor }}.gomod.txt"
           done
 
       - name: Package build
         shell: bash
         run: |
           set -euo pipefail
-          PKG="tailscale-1.104.4-go1.27.3-linux-armv${GOARM}-${{ env.FLAVOR }}"
+          VERSION_NO_V="${TAILSCALE_REF#v}"
+          PKG="tailscale-${VERSION_NO_V}-go${GO_VERSION}-linux-armv${GOARM}-${{ matrix.flavor }}"
           STAGE="out/$PKG"
           mkdir -p "$STAGE"
-          cp "dist/tailscale-${{ env.FLAVOR }}" "$STAGE/tailscale"
-          cp "dist/tailscaled-${{ env.FLAVOR }}" "$STAGE/tailscaled"
-          cp diagnostics/environment-${{ env.FLAVOR }}.txt "$STAGE/build-info.txt"
-          cp diagnostics/*-${{ env.FLAVOR }}.*.txt "$STAGE/" 2>/dev/null || true
-          [ -f diagnostics/applied-community-legacy.patch ] && \
-            cp diagnostics/applied-community-legacy.patch "$STAGE/" || true
+          cp "dist/tailscale-${{ matrix.flavor }}" "$STAGE/tailscale"
+          cp "dist/tailscaled-${{ matrix.flavor }}" "$STAGE/tailscaled"
+          cp diagnostics/environment-${{ matrix.flavor }}.txt "$STAGE/build-info.txt"
+          cp diagnostics/*-${{ matrix.flavor }}.*.txt "$STAGE/" 2>/dev/null || true
           (cd "$STAGE" && sha256sum tailscale tailscaled > SHA256SUMS)
           tar -C out -czf "out/$PKG.tar.gz" "$PKG"
           sha256sum "out/$PKG.tar.gz" > "out/$PKG.tar.gz.sha256"
@@ -154,9 +174,11 @@ jobs:
           chmod +x scripts/package-softcenter-dual.sh
           scripts/package-softcenter-dual.sh \
             "$GITHUB_WORKSPACE/dist" \
-            "${{ env.FLAVOR }}" \
+            "${{ matrix.flavor }}" \
             "$GOARM" \
-            "$GITHUB_WORKSPACE"
+            "$GITHUB_WORKSPACE" \
+            "$TAILSCALE_REF" \
+            "$GO_VERSION"
 
       - name: Validate complete Softcenter package
         if: success()
@@ -177,7 +199,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: tailscale-v1.104.4-go1.27.3-armv${{ env.GOARM }}-${{ env.FLAVOR }}
+          name: tailscale-${{ env.TAILSCALE_REF }}-go${{ env.GO_VERSION }}-armv${{ env.GOARM }}-${{ matrix.flavor }}
           path: |
             out/*.tar.gz
             out/*.sha256
