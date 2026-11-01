@@ -1,0 +1,151 @@
+name: Build selectable Tailscale RT-AC68P v11 full three-package build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tailscale_ref:
+        description: "Tailscale tag, e.g. v1.104.4"
+        required: true
+        default: "v1.104.4"
+        type: string
+      go_version:
+        description: "Go version, e.g. 1.27.3"
+        required: true
+        default: "1.27.3"
+        type: string
+      goarm:
+        description: "ARM level"
+        required: true
+        default: "7"
+        type: choice
+        options: ["7", "5"]
+      job_mode:
+        description: "one Job outputs all 3 complete installers, or three independent jobs"
+        required: true
+        default: "one-job-all"
+        type: choice
+        options:
+          - one-job-all
+          - three-jobs
+
+permissions:
+  contents: read
+
+env:
+  TAILSCALE_REF: ${{ inputs.tailscale_ref }}
+  GO_VERSION: ${{ inputs.go_version }}
+  GOARM: ${{ inputs.goarm }}
+  GOTOOLCHAIN: local
+
+jobs:
+  all-in-one:
+    if: ${{ inputs.job_mode == 'one-job-all' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/checkout@v5
+        with:
+          repository: tailscale/tailscale
+          ref: ${{ env.TAILSCALE_REF }}
+          path: tailscale-src
+          fetch-depth: 1
+      - name: Verify source Go requirement
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          REQUIRED=$(awk '$1=="go" {print $2; exit}' go.mod)
+          python3 - "$REQUIRED" "$GO_VERSION" <<'PY'
+          import re,sys
+          def v(x):
+              a=[int(n) for n in re.findall(r'[0-9]+',x)[:3]]
+              return tuple(a+[0]*(3-len(a)))
+          print('required=',sys.argv[1],'selected=',sys.argv[2])
+          if v(sys.argv[2]) < v(sys.argv[1]): raise SystemExit('selected Go is too old')
+          PY
+      - name: Build all three complete installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/build-v11.sh all "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/tailscale-src" "$TAILSCALE_REF" "$GO_VERSION" "$GOARM"
+      - name: Validate all three packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find out-softcenter -name '*.tar.gz' | wc -l)" -eq 3
+          for p in out-softcenter/*.tar.gz; do
+            d=$(mktemp -d); tar -xzf "$p" -C "$d"
+            for f in "$d"/tailscale/install.sh "$d"/tailscale/uninstall.sh "$d"/tailscale/scripts/*.sh; do sh -n "$f"; done
+            (cd "$d/tailscale" && sha256sum -c CORE-SHA256SUMS)
+            rm -rf "$d"
+          done
+      - name: Upload one artifact containing all three files
+        uses: actions/upload-artifact@v5
+        with:
+          name: tailscale-${{ env.TAILSCALE_REF }}-go${{ env.GO_VERSION }}-armv${{ env.GOARM }}-all-three-v11
+          path: |
+            out-softcenter/*.tar.gz
+            out-softcenter/*.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  three-separate:
+    if: ${{ inputs.job_mode == 'three-jobs' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [usb-hs3, legacy-runtime, combo-core]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - uses: actions/checkout@v5
+        with:
+          repository: tailscale/tailscale
+          ref: ${{ env.TAILSCALE_REF }}
+          path: tailscale-src
+          fetch-depth: 1
+      - name: Verify source Go requirement
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          REQUIRED=$(awk '$1=="go" {print $2; exit}' go.mod)
+          python3 - "$REQUIRED" "$GO_VERSION" <<'PY'
+          import re,sys
+          def v(x):
+              a=[int(n) for n in re.findall(r'[0-9]+',x)[:3]]
+              return tuple(a+[0]*(3-len(a)))
+          if v(sys.argv[2]) < v(sys.argv[1]): raise SystemExit('selected Go is too old')
+          PY
+      - name: Build selected complete installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/build-v11.sh "${{ matrix.variant }}" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/tailscale-src" "$TAILSCALE_REF" "$GO_VERSION" "$GOARM"
+      - name: Validate selected package
+        shell: bash
+        run: |
+          set -euo pipefail
+          p=$(find out-softcenter -name '*.tar.gz' | head -n1); test -n "$p"
+          d=$(mktemp -d); tar -xzf "$p" -C "$d"
+          for f in "$d"/tailscale/install.sh "$d"/tailscale/uninstall.sh "$d"/tailscale/scripts/*.sh; do sh -n "$f"; done
+          (cd "$d/tailscale" && sha256sum -c CORE-SHA256SUMS)
+      - name: Upload selected package
+        uses: actions/upload-artifact@v5
+        with:
+          name: tailscale-${{ env.TAILSCALE_REF }}-go${{ env.GO_VERSION }}-armv${{ env.GOARM }}-${{ matrix.variant }}-v11
+          path: |
+            out-softcenter/*.tar.gz
+            out-softcenter/*.sha256
+          if-no-files-found: error
+          retention-days: 90

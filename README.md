@@ -1,16 +1,17 @@
-# Selectable Tailscale RT-AC68P dual-job build v9
+# RT-AC68P Tailscale v11
 
-The workflow accepts manually entered versions while keeping safe defaults:
+完整累计构建版，保留v9式完整脚本结构，不做功能删减。
 
-- `tailscale_ref`: default `v1.104.4`
-- `go_version`: default `1.27.3`
-- `goarm`: default `7`
+运行参数：
+- tailscale_ref：手动填写，默认v1.104.4
+- go_version：手动填写，默认1.27.3
+- goarm：默认7，可选5
+- job_mode：默认one-job-all，可选three-jobs
 
-Before compilation, the workflow reads the selected Tailscale source `go.mod` and stops with a clear error if the manually selected Go version is older than the source requirement.
+默认one-job-all只运行一个Job，但生成三个完整梅林安装包：
+1. usb-hs3：严格采用HS3安装机制。两个核心只放ROUTERUSB，JFFS只放插件脚本和软链接；必须插U盘才能启动。
+2. legacy-runtime：保留双核心双存储旧逻辑，增加netfilter-mode=off与旧iptables维护。
+3. combo-core：保留双存储旧逻辑，但JFFS只保存一个ts_include_cli组合核心，适合空间较小的JFFS。
 
-Two independent jobs are always created:
-
-1. `upstream-router`: official Tailscale networking behavior plus Softcenter, dual-storage, memory, swap and watchdog adaptations.
-2. `legacy-runtime`: the same official source build, with runtime `--netfilter-mode=off`, manual legacy iptables rules and five-minute firewall repair added to the generated plugin package.
-
-Both jobs directly generate complete Softcenter offline installers with the selected versions embedded in the filename. No third-party source patch is applied.
+选择three-jobs后，三个方案分别独立构建、校验和上传。
+双存储方案的JFFS最低空间设置为32000KB；usb-hs3不使用该限制，检查U盘EXT4、Swap和100000KB可用空间。

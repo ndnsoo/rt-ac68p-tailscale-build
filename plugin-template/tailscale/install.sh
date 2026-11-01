@@ -97,36 +97,67 @@ install_now(){
 	echo_date "安装插件相关文件..."
 	cd /tmp
 
-	# Dual storage: keep a JFFS fallback core and mirror to ROUTERUSB when present.
-	local JCORE="/jffs/softcenter/tailscale-core"
-	local JSTATE="/jffs/softcenter/etc/tailscale"
-	local USBROOT="/tmp/mnt/ROUTERUSB"
-	local USBTS="${USBROOT}/tailscale"
-	local JFREE=$(df -k /jffs | awk 'NR==2 {print $4}')
-	if [ -z "${JFREE}" ] || [ "${JFREE}" -lt 45000 ]; then
-		echo_date "JFFS可用空间不足45MB，无法保留无U盘运行核心！"
-		exit_install 1
+	if [ -f /tmp/${module}/bin/.usb_only ]; then
+		local USBROOT=/tmp/mnt/ROUTERUSB
+		local USBTS=${USBROOT}/tailscale
+		local SWAPFILE=${USBROOT}/tailscale-swapfile
+		if [ ! -d "$USBROOT" ] || ! mount | grep -q " ${USBROOT} type ext4 "; then
+			echo_date "未检测到已挂载的EXT4 U盘：${USBROOT}，停止安装！"
+			exit_install 1
+		fi
+		if [ ! -f "$SWAPFILE" ]; then
+			echo_date "未检测到U盘Swap文件：${SWAPFILE}，停止安装！"
+			exit_install 1
+		fi
+		grep -q "$SWAPFILE" /proc/swaps || /sbin/swapon "$SWAPFILE" 2>/dev/null || { echo_date "启用Swap失败！"; exit_install 1; }
+		local USBFREE=$(df -k "$USBROOT" | awk 'NR==2 {print $4}')
+		if [ -z "$USBFREE" ] || [ "$USBFREE" -lt 100000 ]; then
+			echo_date "U盘可用空间不足100000KB，停止安装！"
+			exit_install 1
+		fi
+		mkdir -p "$USBTS/bin" "$USBTS/state" "$USBTS/logs" "$USBTS/backups/pre-v11-$(date +%Y%m%d-%H%M%S)"
+		cp -f /tmp/${module}/bin/tailscale "$USBTS/bin/tailscale" || exit_install 1
+		cp -f /tmp/${module}/bin/tailscaled "$USBTS/bin/tailscaled" || exit_install 1
+		chmod 755 "$USBTS/bin/tailscale" "$USBTS/bin/tailscaled"
+		rm -f /jffs/softcenter/bin/tailscale /jffs/softcenter/bin/tailscaled
+		ln -sf "$USBTS/bin/tailscale" /jffs/softcenter/bin/tailscale
+		ln -sf "$USBTS/bin/tailscaled" /jffs/softcenter/bin/tailscaled
+		# Marker controls config/storage scripts so this package retains the HS3 USB-only mechanism.
+		touch /jffs/softcenter/configs/tailscale_usb_only
+	else
+		# v10 dual storage, user-selected 32MB minimum JFFS free space.
+		local JCORE=/jffs/softcenter/tailscale-core
+		local JSTATE=/jffs/softcenter/etc/tailscale
+		local USBROOT=/tmp/mnt/ROUTERUSB
+		local USBTS=${USBROOT}/tailscale
+		local JFREE=$(df -k /jffs | awk 'NR==2 {print $4}')
+		if [ -z "$JFREE" ] || [ "$JFREE" -lt 32000 ]; then
+			echo_date "JFFS可用空间不足32MB，停止安装！"
+			exit_install 1
+		fi
+		mkdir -p "$JCORE" "$JSTATE"
+		if mount | grep -q " ${USBROOT} type ext4 "; then
+			local BACKUP_DIR="$USBTS/backups/pre-v10-$(date +%Y%m%d-%H%M%S)"
+			mkdir -p "$USBTS/bin" "$USBTS/state" "$USBTS/logs" "$USBTS/backups" "$BACKUP_DIR"
+			[ -x /jffs/softcenter/bin/tailscale ] && cp -Lpf /jffs/softcenter/bin/tailscale "$BACKUP_DIR/tailscale" 2>/dev/null
+			[ -x /jffs/softcenter/bin/tailscaled ] && cp -Lpf /jffs/softcenter/bin/tailscaled "$BACKUP_DIR/tailscaled" 2>/dev/null
+			[ -x "$JCORE/tailscale_combo" ] && cp -pf "$JCORE/tailscale_combo" "$BACKUP_DIR/tailscale_combo" 2>/dev/null
+			[ -f "$USBTS/state/tailscaled.state" ] && [ ! -f "$JSTATE/tailscaled.state" ] && cp -pf "$USBTS/state/tailscaled.state" "$JSTATE/tailscaled.state"
+		fi
+		rm -f "$JCORE/tailscale" "$JCORE/tailscaled" "$JCORE/tailscale_combo"
+		if [ -f /tmp/${module}/bin/.combo ]; then
+			cp -f /tmp/${module}/bin/tailscale_combo "$JCORE/tailscale_combo" || exit_install 1
+			chmod 755 "$JCORE/tailscale_combo"
+			ln -sf "$JCORE/tailscale_combo" "$JCORE/tailscale"
+			ln -sf "$JCORE/tailscale_combo" "$JCORE/tailscaled"
+		else
+			cp -f /tmp/${module}/bin/tailscale "$JCORE/tailscale" || exit_install 1
+			cp -f /tmp/${module}/bin/tailscaled "$JCORE/tailscaled" || exit_install 1
+			chmod 755 "$JCORE/tailscale" "$JCORE/tailscaled"
+		fi
+		rm -f /jffs/softcenter/bin/tailscale /jffs/softcenter/bin/tailscaled
+		rm -f /jffs/softcenter/configs/tailscale_usb_only
 	fi
-	mkdir -p "${JCORE}" "${JSTATE}"
-	# Preserve the current core before replacing it.
-	local BACKUP_STAMP=$(date +%Y%m%d-%H%M%S)
-	if mount | grep -q " ${USBROOT} type ext4 "; then
-		mkdir -p "${USBTS}/bin" "${USBTS}/state" "${USBTS}/logs" "${USBTS}/backups/pre-v6-${BACKUP_STAMP}"
-		[ -x /jffs/softcenter/bin/tailscale ] && cp -Lpf /jffs/softcenter/bin/tailscale "${USBTS}/backups/pre-v6-${BACKUP_STAMP}/tailscale" 2>/dev/null
-		[ -x /jffs/softcenter/bin/tailscaled ] && cp -Lpf /jffs/softcenter/bin/tailscaled "${USBTS}/backups/pre-v6-${BACKUP_STAMP}/tailscaled" 2>/dev/null
-		[ -f "${USBTS}/state/tailscaled.state" ] && [ ! -f "${JSTATE}/tailscaled.state" ] && cp -pf "${USBTS}/state/tailscaled.state" "${JSTATE}/tailscaled.state"
-	fi
-	cp -f /tmp/${module}/bin/tailscale "${JCORE}/tailscale" || exit_install 1
-	cp -f /tmp/${module}/bin/tailscaled "${JCORE}/tailscaled" || exit_install 1
-	chmod 755 "${JCORE}/tailscale" "${JCORE}/tailscaled"
-	if mount | grep -q " ${USBROOT} type ext4 "; then
-		cp -pf "${JCORE}/tailscale" "${USBTS}/bin/tailscale"
-		cp -pf "${JCORE}/tailscaled" "${USBTS}/bin/tailscaled"
-		chmod 755 "${USBTS}/bin/tailscale" "${USBTS}/bin/tailscaled"
-	fi
-	rm -f /jffs/softcenter/bin/tailscale /jffs/softcenter/bin/tailscaled
-	ln -sf "${JCORE}/tailscale" /jffs/softcenter/bin/tailscale
-	ln -sf "${JCORE}/tailscaled" /jffs/softcenter/bin/tailscaled
 
 	cp -rf /tmp/${module}/res/* /jffs/softcenter/res/
 	cp -rf /tmp/${module}/scripts/* /jffs/softcenter/scripts/
@@ -137,10 +168,8 @@ install_now(){
 	# Permissions
 	chmod 755 /jffs/softcenter/bin/tailscale* >/dev/null 2>&1
 	chmod 755 /jffs/softcenter/scripts/tailscale*.sh >/dev/null 2>&1
-	/jffs/softcenter/scripts/tailscale_bootstrap.sh || {
-		echo_date "写入开机延迟启动和守护任务失败，停止安装！"
-		exit_install 1
-	}
+	/jffs/softcenter/scripts/tailscale_storage.sh select >/dev/null 2>&1 || true
+	/jffs/softcenter/scripts/tailscale_bootstrap.sh || { echo_date "写入启动守护失败"; exit_install 1; }
 
 	# intall different UI
 	set_skin
@@ -162,7 +191,7 @@ install_now(){
 	fi
 	dbus set tailscale_auto_update="0"
 	dbus set tailscale_usb_root="/tmp/mnt/ROUTERUSB/tailscale"
-	dbus set tailscale_core_version="1.104.4-go1.27.3-v6-dual"
+	dbus set tailscale_core_version="1.104.4"
 	if [ -z "$(dbus get tailscale_login_server)" ];then
 		dbus set tailscale_login_server="https://bb.776699.xyz"
 	fi

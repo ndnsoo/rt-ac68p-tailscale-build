@@ -2,10 +2,6 @@
 alias echo_date='echo 【$(TZ=UTC-8 date -R +%Y年%m月%d日\ %X)】:'
 
 echo_date "删除tailscale插件相关文件！"
-cru d TailscaleWatchdog >/dev/null 2>&1
-if [ -f /jffs/scripts/services-start ]; then
-	sed -i '/# TAILSCALE-V6-START/,/# TAILSCALE-V6-END/d; /# TAILSCALE-HS5-START/,/# TAILSCALE-HS5-END/d' /jffs/scripts/services-start
-fi
 rm -rf /tmp/tailscale* >/dev/null 2>&1
 sh /jffs/softcenter/scripts/tailscale_config.sh stop
 rm -rf /jffs/softcenter/res/icon-tailscale.png
@@ -26,5 +22,3 @@ echo_date "-------------------------------------------"
 
 
 # hs3: keep /tmp/mnt/ROUTERUSB/tailscale for manual rollback and state recovery.
-
-# v6 intentionally preserves /jffs/softcenter/tailscale-core and /jffs/softcenter/etc/tailscale for rollback and identity recovery.

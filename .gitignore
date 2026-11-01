@@ -1,5 +1,4 @@
-out/
-dist/
-diagnostics/
 tailscale-src/
-community-legacy/
+dist/
+out-softcenter/
+work-*/
