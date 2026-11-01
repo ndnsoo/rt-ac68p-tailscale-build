@@ -1,0 +1,188 @@
+name: Experimental - Build latest Tailscale with Go 1.23
+
+on:
+  workflow_dispatch:
+    inputs:
+      tailscale_ref:
+        description: "Latest Tailscale tag to test"
+        required: true
+        default: "v1.104.4"
+        type: string
+      go_version:
+        description: "Old Go toolchain for Linux 2.6.36"
+        required: true
+        default: "1.23.12"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: latest-go123-${{ github.ref }}-${{ inputs.tailscale_ref }}
+  cancel-in-progress: false
+
+env:
+  TAILSCALE_REF: ${{ inputs.tailscale_ref }}
+  GO_VERSION: ${{ inputs.go_version }}
+  GOOS: linux
+  GOARCH: arm
+  GOARM: "7"
+  CGO_ENABLED: "0"
+  GOTOOLCHAIN: local
+
+jobs:
+  experimental-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v5
+
+      - name: Validate Go 1.23 selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$GO_VERSION" in
+            1.23|1.23.*) ;;
+            *) echo "ERROR: Only Go 1.23.x is allowed." >&2; exit 1 ;;
+          esac
+
+      - name: Install Go 1.23
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Checkout latest Tailscale source
+        uses: actions/checkout@v5
+        with:
+          repository: tailscale/tailscale
+          ref: ${{ env.TAILSCALE_REF }}
+          path: tailscale-src
+          fetch-depth: 1
+
+      - name: Record original source requirements
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p diagnostics dist out
+          {
+            echo "Tailscale ref: $TAILSCALE_REF"
+            echo "Commit: $(git -C tailscale-src rev-parse HEAD)"
+            echo "Requested Go: $GO_VERSION"
+            echo "Actual Go: $(go version)"
+            echo "Original go directive: $(awk '$1==\"go\" {print $2; exit}' tailscale-src/go.mod)"
+            echo "Original toolchain directive: $(awk '$1==\"toolchain\" {print $2; exit}' tailscale-src/go.mod)"
+            echo "Target: GOOS=$GOOS GOARCH=$GOARCH GOARM=$GOARM CGO_ENABLED=$CGO_ENABLED"
+          } | tee diagnostics/environment.txt
+          cp tailscale-src/go.mod diagnostics/go.mod.original
+          cp tailscale-src/go.sum diagnostics/go.sum.original
+
+      - name: Strict compatibility probe without source changes
+        id: strict
+        continue-on-error: true
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -o pipefail
+          go build -v -o "$GITHUB_WORKSPACE/dist/tailscaled.strict" tailscale.com/cmd/tailscaled \
+            2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/strict-build.log"
+
+      - name: Prepare forced Go 1.23 experiment
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          cp go.mod "$GITHUB_WORKSPACE/diagnostics/go.mod.before-force"
+          sed -i -E 's/^go .*/go 1.23.0/' go.mod
+          sed -i -E '/^toolchain /d' go.mod
+          cp go.mod "$GITHUB_WORKSPACE/diagnostics/go.mod.forced-go123"
+          echo "WARNING: go.mod was changed only inside this temporary runner." | tee "$GITHUB_WORKSPACE/diagnostics/force-warning.txt"
+          echo "The upstream source repository and user repository are not modified." | tee -a "$GITHUB_WORKSPACE/diagnostics/force-warning.txt"
+
+      - name: Resolve modules with Go 1.23
+        id: modules
+        continue-on-error: true
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -o pipefail
+          go mod download 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/go-mod-download.log"
+
+      - name: Force-build latest tailscale and tailscaled with Go 1.23
+        id: forced
+        continue-on-error: true
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -o pipefail
+          {
+            echo "===== BUILD tailscale ====="
+            go build -v -trimpath -o "$GITHUB_WORKSPACE/dist/tailscale" tailscale.com/cmd/tailscale
+            echo "===== BUILD tailscaled ====="
+            go build -v -trimpath -o "$GITHUB_WORKSPACE/dist/tailscaled" tailscale.com/cmd/tailscaled
+          } 2>&1 | tee "$GITHUB_WORKSPACE/diagnostics/forced-build.log"
+
+      - name: Verify successful experimental binaries
+        id: verify
+        if: ${{ hashFiles('dist/tailscale', 'dist/tailscaled') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod 0755 dist/tailscale dist/tailscaled
+          for name in tailscale tailscaled; do
+            test -s "dist/$name"
+            file "dist/$name" | tee "diagnostics/$name.file.txt"
+            file "dist/$name" | grep -qi 'ELF 32-bit'
+            file "dist/$name" | grep -qi 'ARM'
+            if readelf -l "dist/$name" | grep -q 'Requesting program interpreter'; then
+              echo "ERROR: $name is dynamically linked." >&2
+              exit 1
+            fi
+            go version -m "dist/$name" | tee "diagnostics/$name.gomod.txt"
+          done
+          PACKAGE="tailscale-${TAILSCALE_REF#v}-go${GO_VERSION}-linux-armv7-rt-ac68p-experimental"
+          mkdir -p "out/$PACKAGE"
+          cp dist/tailscale dist/tailscaled "out/$PACKAGE/"
+          cp diagnostics/environment.txt diagnostics/*.file.txt diagnostics/*.gomod.txt "out/$PACKAGE/"
+          (cd "out/$PACKAGE" && sha256sum tailscale tailscaled > SHA256SUMS)
+          tar -C out -czf "out/$PACKAGE.tar.gz" "$PACKAGE"
+          sha256sum "out/$PACKAGE.tar.gz" > "out/$PACKAGE.tar.gz.sha256"
+
+      - name: Write final diagnostic summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "Strict probe outcome: ${{ steps.strict.outcome }}"
+            echo "Module download outcome: ${{ steps.modules.outcome }}"
+            echo "Forced build outcome: ${{ steps.forced.outcome }}"
+            echo "Verification outcome: ${{ steps.verify.outcome }}"
+            if [ -s dist/tailscale ] && [ -s dist/tailscaled ]; then
+              echo "RESULT: Experimental binaries were produced. They still require router testing."
+            else
+              echo "RESULT: Latest Tailscale cannot be built directly with Go 1.23 using this experiment."
+              echo "Read forced-build.log and go-mod-download.log for the exact incompatible language/API/dependency."
+            fi
+          } | tee diagnostics/summary.txt
+
+      - name: Upload diagnostics and any successful binaries
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: latest-${{ env.TAILSCALE_REF }}-with-go${{ env.GO_VERSION }}-experiment
+          path: |
+            diagnostics/**
+            out/*.tar.gz
+            out/*.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Fail clearly when no binaries were produced
+        if: ${{ hashFiles('dist/tailscale', 'dist/tailscaled') == '' }}
+        shell: bash
+        run: |
+          echo "The experiment completed, but usable binaries were not produced." >&2
+          echo "Download the diagnostic artifact and inspect forced-build.log." >&2
+          exit 1
