@@ -97,60 +97,38 @@ install_now(){
 	echo_date "安装插件相关文件..."
 	cd /tmp
 
-	# v12 package-selected storage mechanism.
-	local USBROOT="/tmp/mnt/ROUTERUSB"
-	local USBTS="${USBROOT}/tailscale"
-	local SWAPFILE="${USBROOT}/tailscale-swapfile"
+	# v12r2 package-selected storage. USB variants check USB only; dual variants check JFFS.
+	local USBROOT=/tmp/mnt/ROUTERUSB
+	local USBTS=${USBROOT}/tailscale
+	local SWAPFILE=${USBROOT}/tailscale-swapfile
 	if [ -f /tmp/${module}/bin/.usb_only ]; then
-		if [ ! -d "${USBROOT}" ] || ! mount | grep -q " ${USBROOT} type ext4 "; then
-			echo_date "未检测到已挂载的EXT4 U盘：${USBROOT}，停止安装！"
-			exit_install 1
-		fi
-		[ -f "${SWAPFILE}" ] || { echo_date "未检测到U盘Swap文件！"; exit_install 1; }
-		grep -q "${SWAPFILE}" /proc/swaps || /sbin/swapon "${SWAPFILE}" 2>/dev/null || exit_install 1
-		local USBFREE=$(df -k "${USBROOT}" | awk 'NR==2 {print $4}')
+		[ -d "$USBROOT" ] && mount | grep -q " $USBROOT type ext4 " || { echo_date "未检测到EXT4 ROUTERUSB，停止安装！"; exit_install 1; }
+		[ -f "$SWAPFILE" ] || { echo_date "未检测到U盘Swap文件，停止安装！"; exit_install 1; }
+		grep -q "$SWAPFILE" /proc/swaps || /sbin/swapon "$SWAPFILE" 2>/dev/null || exit_install 1
+		local USBFREE=$(df -k "$USBROOT" | awk 'NR==2 {print $4}')
 		local CORE_KB=$(du -sk /tmp/${module}/bin 2>/dev/null | awk '{print $1}')
 		local USBNEED=$((CORE_KB + 65536))
-		[ "${USBNEED}" -ge 100000 ] || USBNEED=100000
+		[ "$USBNEED" -ge 100000 ] || USBNEED=100000
 		echo_date "U盘可用空间：${USBFREE}KB，本安装包最低需要：${USBNEED}KB。"
-		[ -n "${USBFREE}" ] && [ "${USBFREE}" -ge "${USBNEED}" ] || { echo_date "U盘可用空间不足，停止安装！"; exit_install 1; }
-		mkdir -p "${USBTS}/bin" "${USBTS}/state" "${USBTS}/logs" "${USBTS}/backups/pre-v12-$(date +%Y%m%d-%H%M%S)"
-		if [ -f /tmp/${module}/bin/.combo ]; then
-			cp -f /tmp/${module}/bin/tailscale_combo "${USBTS}/bin/tailscale_combo" || exit_install 1
-			chmod 755 "${USBTS}/bin/tailscale_combo"
-			ln -sf "${USBTS}/bin/tailscale_combo" "${USBTS}/bin/tailscale"
-			ln -sf "${USBTS}/bin/tailscale_combo" "${USBTS}/bin/tailscaled"
-		else
-			cp -f /tmp/${module}/bin/tailscale "${USBTS}/bin/tailscale" || exit_install 1
-			cp -f /tmp/${module}/bin/tailscaled "${USBTS}/bin/tailscaled" || exit_install 1
-			chmod 755 "${USBTS}/bin/tailscale" "${USBTS}/bin/tailscaled"
-		fi
+		[ -n "$USBFREE" ] && [ "$USBFREE" -ge "$USBNEED" ] || { echo_date "U盘可用空间不足，停止安装！"; exit_install 1; }
+		mkdir -p "$USBTS/bin" "$USBTS/state" "$USBTS/logs" "$USBTS/backups"
+		BACKUP_DIR="$USBTS/backups/pre-v12r2-$(date +%Y%m%d-%H%M%S)"; mkdir -p "$BACKUP_DIR"
+		[ -x "$USBTS/bin/tailscale" ] && cp -Lpf "$USBTS/bin/tailscale" "$BACKUP_DIR/tailscale" 2>/dev/null
+		[ -x "$USBTS/bin/tailscaled" ] && cp -Lpf "$USBTS/bin/tailscaled" "$BACKUP_DIR/tailscaled" 2>/dev/null
+		rm -f "$USBTS/bin/tailscale" "$USBTS/bin/tailscaled" "$USBTS/bin/tailscale_combo"
+		if [ -f /tmp/${module}/bin/.combo ]; then cp -f /tmp/${module}/bin/tailscale_combo "$USBTS/bin/tailscale_combo" || exit_install 1; chmod 755 "$USBTS/bin/tailscale_combo"; ln -sf "$USBTS/bin/tailscale_combo" "$USBTS/bin/tailscale"; ln -sf "$USBTS/bin/tailscale_combo" "$USBTS/bin/tailscaled"; else cp -f /tmp/${module}/bin/tailscale "$USBTS/bin/tailscale" || exit_install 1; cp -f /tmp/${module}/bin/tailscaled "$USBTS/bin/tailscaled" || exit_install 1; chmod 755 "$USBTS/bin/tailscale" "$USBTS/bin/tailscaled"; fi
 		rm -f /jffs/softcenter/bin/tailscale /jffs/softcenter/bin/tailscaled
-		ln -sf "${USBTS}/bin/tailscale" /jffs/softcenter/bin/tailscale
-		ln -sf "${USBTS}/bin/tailscaled" /jffs/softcenter/bin/tailscaled
+		ln -sf "$USBTS/bin/tailscale" /jffs/softcenter/bin/tailscale
+		ln -sf "$USBTS/bin/tailscaled" /jffs/softcenter/bin/tailscaled
 		touch /jffs/softcenter/configs/tailscale_usb_only
 	else
-		local JCORE=/jffs/softcenter/tailscale-core
-		local JSTATE=/jffs/softcenter/etc/tailscale
+		local JCORE=/jffs/softcenter/tailscale-core; local JSTATE=/jffs/softcenter/etc/tailscale
 		local JFREE=$(df -k /jffs | awk 'NR==2 {print $4}')
-		[ -n "${JFREE}" ] && [ "${JFREE}" -ge 32000 ] || { echo_date "JFFS可用空间不足32MB！"; exit_install 1; }
-		mkdir -p "${JCORE}" "${JSTATE}"
-		if mount | grep -q " ${USBROOT} type ext4 "; then
-			local BACKUP_DIR="${USBTS}/backups/pre-v12-$(date +%Y%m%d-%H%M%S)"
-			mkdir -p "${USBTS}/bin" "${USBTS}/state" "${USBTS}/logs" "${BACKUP_DIR}"
-			[ -f "${USBTS}/state/tailscaled.state" ] && [ ! -f "${JSTATE}/tailscaled.state" ] && cp -pf "${USBTS}/state/tailscaled.state" "${JSTATE}/tailscaled.state"
-		fi
-		rm -f "${JCORE}/tailscale" "${JCORE}/tailscaled" "${JCORE}/tailscale_combo"
-		if [ -f /tmp/${module}/bin/.combo ]; then
-			cp -f /tmp/${module}/bin/tailscale_combo "${JCORE}/tailscale_combo" || exit_install 1
-			chmod 755 "${JCORE}/tailscale_combo"
-			ln -sf "${JCORE}/tailscale_combo" "${JCORE}/tailscale"
-			ln -sf "${JCORE}/tailscale_combo" "${JCORE}/tailscaled"
-		else
-			cp -f /tmp/${module}/bin/tailscale "${JCORE}/tailscale" || exit_install 1
-			cp -f /tmp/${module}/bin/tailscaled "${JCORE}/tailscaled" || exit_install 1
-			chmod 755 "${JCORE}/tailscale" "${JCORE}/tailscaled"
-		fi
+		[ -n "$JFREE" ] && [ "$JFREE" -ge 32000 ] || { echo_date "JFFS可用空间不足32MB，停止安装！"; exit_install 1; }
+		mkdir -p "$JCORE" "$JSTATE"
+		if mount | grep -q " $USBROOT type ext4 "; then mkdir -p "$USBTS/bin" "$USBTS/state" "$USBTS/logs" "$USBTS/backups"; [ -f "$USBTS/state/tailscaled.state" ] && [ ! -f "$JSTATE/tailscaled.state" ] && cp -pf "$USBTS/state/tailscaled.state" "$JSTATE/tailscaled.state"; fi
+		rm -f "$JCORE/tailscale" "$JCORE/tailscaled" "$JCORE/tailscale_combo"
+		if [ -f /tmp/${module}/bin/.combo ]; then cp -f /tmp/${module}/bin/tailscale_combo "$JCORE/tailscale_combo" || exit_install 1; chmod 755 "$JCORE/tailscale_combo"; ln -sf "$JCORE/tailscale_combo" "$JCORE/tailscale"; ln -sf "$JCORE/tailscale_combo" "$JCORE/tailscaled"; else cp -f /tmp/${module}/bin/tailscale "$JCORE/tailscale" || exit_install 1; cp -f /tmp/${module}/bin/tailscaled "$JCORE/tailscaled" || exit_install 1; chmod 755 "$JCORE/tailscale" "$JCORE/tailscaled"; fi
 		rm -f /jffs/softcenter/configs/tailscale_usb_only
 	fi
 

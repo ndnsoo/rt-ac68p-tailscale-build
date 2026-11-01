@@ -1,33 +1,77 @@
 #!/bin/sh
 PATH=/jffs/softcenter/bin:/jffs/softcenter/scripts:/usr/sbin:/usr/bin:/sbin:/bin
-LOCK=/tmp/tailscale_watchdog.lock
-TMP=/tmp/tailscale-status
-LOG=$TMP/status.log
-ST=/jffs/softcenter/scripts/tailscale_storage.sh
-CFG=/jffs/softcenter/scripts/tailscale_config.sh
-mkdir -p "$TMP"
-[ -x /jffs/softcenter/scripts/tailscale_logrotate.sh ] && /jffs/softcenter/scripts/tailscale_logrotate.sh >/dev/null 2>&1
-[ -d "$LOCK" ] && exit 0
-mkdir "$LOCK" 2>/dev/null || exit 0
-trap 'rmdir "$LOCK" 2>/dev/null' 0 1 2 3 15
-trim_log(){ [ -f "$1" ] || return; SIZE=$(wc -c < "$1" 2>/dev/null); [ "${SIZE:-0}" -gt 262144 ] && { tail -c 131072 "$1" > "$1.tmp"; mv "$1.tmp" "$1"; }; }
-log(){ LINE="[$(TZ=UTC-8 date '+%F %T')] $*"; echo "$LINE" >> "$LOG"; trim_log "$LOG"; if "$ST" usb-ready; then mkdir -p /tmp/mnt/ROUTERUSB/tailscale/logs; echo "$LINE" >> /tmp/mnt/ROUTERUSB/tailscale/logs/watchdog.log; trim_log /tmp/mnt/ROUTERUSB/tailscale/logs/watchdog.log; fi; }
-[ "$(dbus get tailscale_enable 2>/dev/null)" = 1 ] || { log status=disabled; exit 0; }
-if [ -f /jffs/softcenter/configs/tailscale_usb_only ] && ! "$ST" usb-ready; then log "status=usb-missing"; exit 0; fi
-OLD=$($ST mode 2>/dev/null); RUNLOG=$($ST select 2>/dev/null); MODE=$($ST mode 2>/dev/null); $ST sync-state >/dev/null 2>&1
-[ "$OLD" = "$MODE" ] || log "storage=$OLD->$MODE"
-if pidof tailscaled >/dev/null 2>&1; then
-    [ -x /jffs/softcenter/scripts/tailscale_legacy_firewall.sh ] && /jffs/softcenter/scripts/tailscale_legacy_firewall.sh start >/dev/null 2>&1
-    log "status=running mode=$MODE pid=$(pidof tailscaled) ip=$(/jffs/softcenter/bin/tailscale ip -4 2>/dev/null | head -n1)"
+
+LOCK_DIR=/tmp/tailscale_watchdog.lock
+STATUS_DIR=/tmp/tailscale-status
+STATUS_LOG=$STATUS_DIR/status.log
+STORAGE_SCRIPT=/jffs/softcenter/scripts/tailscale_storage.sh
+CONFIG_SCRIPT=/jffs/softcenter/scripts/tailscale_config.sh
+LOGROTATE_SCRIPT=/jffs/softcenter/scripts/tailscale_logrotate.sh
+LEGACY_FIREWALL=/jffs/softcenter/scripts/tailscale_legacy_firewall.sh
+
+mkdir -p "$STATUS_DIR"
+[ -x "$LOGROTATE_SCRIPT" ] && "$LOGROTATE_SCRIPT" >/dev/null 2>&1
+
+[ -d "$LOCK_DIR" ] && exit 0
+mkdir "$LOCK_DIR" 2>/dev/null || exit 0
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' 0 1 2 3 15
+
+write_log() {
+    LOG_LINE="[$(date '+%F %T')] $*"
+    echo "$LOG_LINE" >> "$STATUS_LOG"
+
+    if "$STORAGE_SCRIPT" usb-ready; then
+        mkdir -p /tmp/mnt/ROUTERUSB/tailscale/logs
+        echo "$LOG_LINE" >> /tmp/mnt/ROUTERUSB/tailscale/logs/watchdog.log
+    fi
+}
+
+if [ "$(dbus get tailscale_enable 2>/dev/null)" != "1" ]; then
+    write_log "status=disabled"
     exit 0
 fi
-if "$ST" usb-ready; then
-    SNAP=/tmp/mnt/ROUTERUSB/tailscale/logs/failure-$(date +%Y%m%d-%H%M%S).log
-    { date; uname -a; free; cat /proc/swaps; mount; ps; route -n 2>/dev/null; dmesg | tail -n 200; tail -n 250 /tmp/syslog.log 2>/dev/null; } > "$SNAP" 2>&1
-    log "status=stopped snapshot=$SNAP"
-else
-    log "status=stopped mode=jffs"
+
+if [ -f /jffs/softcenter/configs/tailscale_usb_only ] && \
+   ! "$STORAGE_SCRIPT" usb-ready; then
+    write_log "status=usb-missing"
+    exit 0
 fi
-$CFG start >/dev/null 2>&1
+
+OLD_MODE=$($STORAGE_SCRIPT mode 2>/dev/null)
+$STORAGE_SCRIPT select >/dev/null 2>&1
+CURRENT_MODE=$($STORAGE_SCRIPT mode 2>/dev/null)
+$STORAGE_SCRIPT sync-state >/dev/null 2>&1
+
+[ "$OLD_MODE" = "$CURRENT_MODE" ] || \
+    write_log "storage=$OLD_MODE->$CURRENT_MODE"
+
+if pidof tailscaled >/dev/null 2>&1; then
+    [ -x "$LEGACY_FIREWALL" ] && "$LEGACY_FIREWALL" start >/dev/null 2>&1
+    write_log "status=running mode=$CURRENT_MODE pid=$(pidof tailscaled)"
+    exit 0
+fi
+
+if "$STORAGE_SCRIPT" usb-ready; then
+    SNAPSHOT=/tmp/mnt/ROUTERUSB/tailscale/logs/failure-$(date +%Y%m%d-%H%M%S).log
+    {
+        date
+        uname -a
+        free
+        cat /proc/swaps
+        mount
+        ps
+        dmesg | tail -n 200
+    } > "$SNAPSHOT" 2>&1
+    write_log "status=stopped snapshot=$SNAPSHOT"
+else
+    write_log "status=stopped"
+fi
+
+$CONFIG_SCRIPT start >/dev/null 2>&1
 sleep 15
-pidof tailscaled >/dev/null 2>&1 && log restart=success || log restart=failed
+
+if pidof tailscaled >/dev/null 2>&1; then
+    write_log "restart=success"
+else
+    write_log "restart=failed"
+fi

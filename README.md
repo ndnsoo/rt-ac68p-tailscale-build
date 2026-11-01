@@ -1,23 +1,22 @@
-# RT-AC68P Tailscale v12 six-package build
+# RT-AC68P Tailscale v12r3
 
-默认 `one-job-all-six` 用一个Job生成六个完整梅林离线安装包；选择 `six-jobs` 则创建六个独立Job。
+v12r3是完整累计修正版，保留可读、可逐行检查的完整脚本结构，不使用压缩成单行的实现。
 
-三种核心形态：upstream、legacy、combo。
-每种核心各有两种安装机制：
-- usb-*：HS3 U盘机制，核心仅写ROUTERUSB，JFFS只放脚本、Web UI和软链接。
-- dual-*：旧双存储逻辑，核心写JFFS并在U盘可用时镜像/优先使用U盘；JFFS最低32000KB。
+## 保留的六个方案
 
-版本参数继续支持手工填写Tailscale标签、Go版本和GOARM。
+- usb-upstream
+- usb-legacy
+- usb-combo
+- dual-upstream
+- dual-legacy
+- dual-combo
 
-## v12r log limits
+默认一个Job生成六个完整安装包，也可选择六个独立Job。
 
-The existing five-minute watchdog also maintains logs:
+## v12r3确认的修正
 
-- `tailscaled.log`: 8 MB active limit, two rotated copies retained.
-- `watchdog.log`: 256 KB limit, last 128 KB retained.
-- `/tmp/tailscale-status/status.log`: 256 KB limit, last 128 KB retained.
-- `failure-*.log`: newest 10 snapshots retained.
-
-## v12r1 storage checks
-
-USB-only packages check only the mounted EXT4 `ROUTERUSB` capacity. The required USB free space is the uploaded `bin` directory size plus 64 MB reserve, with a 100000 KB minimum. Dual-storage packages continue to require 32000 KB free JFFS space.
+1. 默认ARM level为5，仍保留5和7可选。
+2. 修复原插件advertise-routes覆盖login-server和hostname的参数拼接Bug。
+3. 三个USB版只检查EXT4 ROUTERUSB、Swap和USB空间。
+4. 三个dual版继续检查JFFS至少32000KB。
+5. 保留30秒延迟启动、五分钟守护、日志轮换、Web UI、三语言和原注册状态。

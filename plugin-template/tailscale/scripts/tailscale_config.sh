@@ -48,12 +48,8 @@ tailscale_start(){
 		USBTS="${USBROOT}/tailscale"
 		SWAPFILE="${USBROOT}/tailscale-swapfile"
 		RUN_LOG=$(/jffs/softcenter/scripts/tailscale_storage.sh select) || return 1
-		[ -x /jffs/softcenter/scripts/tailscale_logrotate.sh ] && /jffs/softcenter/scripts/tailscale_logrotate.sh >/dev/null 2>&1
-		if [ -f /jffs/softcenter/configs/tailscale_usb_only ]; then
-			STATE_DIR="${USBTS}/state"
-		else
-			STATE_DIR=/jffs/softcenter/etc/tailscale
-		fi
+		/jffs/softcenter/scripts/tailscale_logrotate.sh >/dev/null 2>&1
+		if [ -f /jffs/softcenter/configs/tailscale_usb_only ]; then STATE_DIR="${USBTS}/state"; else STATE_DIR=/jffs/softcenter/etc/tailscale; fi
 		[ -f "${SWAPFILE}" ] && { grep -q "${SWAPFILE}" /proc/swaps || /sbin/swapon "${SWAPFILE}" 2>/dev/null; }
 		mkdir -p "${STATE_DIR}" "${USBTS}/logs" /tmp/var/lib /tmp/tailscale-status
 		export GOMEMLIMIT=96MiB
@@ -62,9 +58,7 @@ tailscale_start(){
 		ln -sf "${STATE_DIR}" /tmp/var/lib/tailscale
 		/jffs/softcenter/bin/tailscaled --cleanup
 		/jffs/softcenter/bin/tailscaled --state="${STATE_DIR}/tailscaled.state" > "${RUN_LOG}" 2>&1 &
-		if [ -z "$(pidof tailscaled)" ];then
-			/jffs/softcenter/bin/tailscaled --state="${STATE_DIR}/tailscaled.state" > "${RUN_LOG}" 2>&1 &
-		fi
+		if [ -z "$(pidof tailscaled)" ]; then /jffs/softcenter/bin/tailscaled --state="${STATE_DIR}/tailscaled.state" > "${RUN_LOG}" 2>&1 & fi
 		args=" --login-server=${tailscale_login_server:-https://bb.776699.xyz} --hostname=${tailscale_hostname:-home-router-ac68u}"
 		if [ "$tailscale_advertise_routes" == "1" ];then
 			subnet=`nvram get lan_ipaddr`
@@ -72,7 +66,7 @@ tailscale_start(){
 			subnet2=`echo $subnet |cut -d. -f2`
 			subnet3=`echo $subnet |cut -d. -f3`
 			subnet="${subnet1}.${subnet2}.${subnet3}.0/24"
-			args=" --advertise-routes=${subnet}"
+			args="${args} --advertise-routes=${subnet}"
 			msg=`echo ${JSON_LANG} | /jffs/softcenter/bin/jq -r '."Advertise routing is enabled"'`
 			echo_date "${msg}"
 		fi

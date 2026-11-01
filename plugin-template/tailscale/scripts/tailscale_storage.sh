@@ -51,8 +51,8 @@ select_storage(){
     fi
 }
 case "$1" in
-    select|"") select_storage ;;
-    mode) [ -f "$MODE_FILE" ] && cat "$MODE_FILE" || echo unknown ;;
-    usb-ready) usb_ready ;;
-    sync-state) usb_ready && [ -f "$JSTATE/tailscaled.state" ] && cp -pf "$JSTATE/tailscaled.state" "$USBTS/state/tailscaled.state.backup" 2>/dev/null ;;
+ select|"") select_storage ;;
+ mode) [ -f "$MODE_FILE" ] && cat "$MODE_FILE" || echo unknown ;;
+ usb-ready) usb_ready ;;
+ sync-state) usb_ready && [ -f "$JSTATE/tailscaled.state" ] && cp -pf "$JSTATE/tailscaled.state" "$USBTS/state/tailscaled.state.backup" 2>/dev/null ;;
 esac

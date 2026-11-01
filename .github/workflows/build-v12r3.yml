@@ -1,0 +1,69 @@
+name: Build selectable Tailscale RT-AC68P six packages v12r3
+on:
+  workflow_dispatch:
+    inputs:
+      tailscale_ref: {description: "Tailscale tag", required: true, default: "v1.104.4", type: string}
+      go_version: {description: "Go version", required: true, default: "1.27.3", type: string}
+      goarm:
+        description: "ARM level (RT-AC68P default 5)"
+        required: true
+        default: "5"
+        type: choice
+        options: ["5", "7"]
+      job_mode:
+        description: "One Job creates all 6 packages, or six Jobs"
+        required: true
+        default: "one-job-all-six"
+        type: choice
+        options: [one-job-all-six, six-jobs]
+permissions: {contents: read}
+env:
+  TAILSCALE_REF: ${{ inputs.tailscale_ref }}
+  GO_VERSION: ${{ inputs.go_version }}
+  GOARM: ${{ inputs.goarm }}
+  GOTOOLCHAIN: local
+jobs:
+  all-six:
+    if: ${{ inputs.job_mode == 'one-job-all-six' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - run: chmod 755 scripts/*.sh plugin-template/tailscale/install.sh plugin-template/tailscale/uninstall.sh plugin-template/tailscale/scripts/*.sh plugin-overlays/legacy/scripts/*.sh
+      - uses: actions/setup-go@v6
+        with: {go-version: "${{ env.GO_VERSION }}", cache: false}
+      - uses: actions/checkout@v5
+        with: {repository: tailscale/tailscale, ref: "${{ env.TAILSCALE_REF }}", path: tailscale-src, fetch-depth: 1}
+      - name: Verify source Go requirement
+        working-directory: tailscale-src
+        run: |
+          R=$(awk '$1=="go" {print $2; exit}' go.mod)
+          python3 - "$R" "$GO_VERSION" <<'PY'
+          import re,sys
+          v=lambda x: tuple(([int(n) for n in re.findall(r'\d+',x)[:3]]+[0,0,0])[:3])
+          assert v(sys.argv[2]) >= v(sys.argv[1]), 'selected Go is too old'
+          PY
+      - run: bash scripts/build-v12.sh all "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/tailscale-src" "$TAILSCALE_REF" "$GO_VERSION" "$GOARM"
+      - name: Validate six packages
+        run: |
+          test "$(find out-softcenter -name '*.tar.gz' | wc -l)" -eq 6
+          for p in out-softcenter/*.tar.gz; do d=$(mktemp -d); tar -xzf "$p" -C "$d"; for f in "$d"/tailscale/install.sh "$d"/tailscale/uninstall.sh "$d"/tailscale/scripts/*.sh; do sh -n "$f"; done; grep -F 'args="${args} --advertise-routes=${subnet}"' "$d/tailscale/scripts/tailscale_config.sh"; (cd "$d/tailscale" && sha256sum -c CORE-SHA256SUMS); rm -rf "$d"; done
+      - uses: actions/upload-artifact@v5
+        with: {name: "tailscale-${{ env.TAILSCALE_REF }}-go${{ env.GO_VERSION }}-armv${{ env.GOARM }}-all-six-v12r3", path: "out-softcenter/*", if-no-files-found: error, retention-days: 90}
+  six-separate:
+    if: ${{ inputs.job_mode == 'six-jobs' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: {variant: [usb-upstream, usb-legacy, usb-combo, dual-upstream, dual-legacy, dual-combo]}
+    steps:
+      - uses: actions/checkout@v5
+      - run: chmod 755 scripts/*.sh plugin-template/tailscale/install.sh plugin-template/tailscale/uninstall.sh plugin-template/tailscale/scripts/*.sh plugin-overlays/legacy/scripts/*.sh
+      - uses: actions/setup-go@v6
+        with: {go-version: "${{ env.GO_VERSION }}", cache: false}
+      - uses: actions/checkout@v5
+        with: {repository: tailscale/tailscale, ref: "${{ env.TAILSCALE_REF }}", path: tailscale-src, fetch-depth: 1}
+      - run: bash scripts/build-v12.sh "${{ matrix.variant }}" "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/tailscale-src" "$TAILSCALE_REF" "$GO_VERSION" "$GOARM"
+      - uses: actions/upload-artifact@v5
+        with: {name: "tailscale-${{ env.TAILSCALE_REF }}-armv${{ env.GOARM }}-${{ matrix.variant }}-v12r3", path: "out-softcenter/*", if-no-files-found: error, retention-days: 90}
