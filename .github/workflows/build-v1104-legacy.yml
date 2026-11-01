@@ -1,0 +1,222 @@
+name: Build Tailscale v1.104.4 for legacy Linux 2.6.36
+
+on:
+  workflow_dispatch:
+    inputs:
+      tailscale_ref:
+        description: "Tailscale release tag"
+        required: true
+        default: "v1.104.4"
+        type: string
+      go_version:
+        description: "Go toolchain required by v1.104.4"
+        required: true
+        default: "1.27.3"
+        type: string
+      goarm:
+        description: "ARM level for RT-AC68P"
+        required: true
+        default: "7"
+        type: choice
+        options: ["7", "5"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tailscale-v1104-legacy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAILSCALE_REF: ${{ inputs.tailscale_ref }}
+  GO_VERSION: ${{ inputs.go_version }}
+  GOOS: linux
+  GOARCH: arm
+  GOARM: ${{ inputs.goarm }}
+  CGO_ENABLED: "0"
+  GOTOOLCHAIN: local
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [upstream, legacy-community]
+
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v5
+
+      - name: Validate fixed security release and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$TAILSCALE_REF" = "v1.104.4" ] || {
+            echo "ERROR: This workflow intentionally builds only v1.104.4." >&2
+            exit 1
+          }
+          [ "$GO_VERSION" = "1.27.3" ] || {
+            echo "ERROR: Tailscale v1.104.4 is built with Go 1.27.3." >&2
+            exit 1
+          }
+          case "$GOARM" in 5|7) ;; *) exit 1 ;; esac
+
+      - name: Install Go 1.27.3
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Checkout Tailscale v1.104.4
+        uses: actions/checkout@v5
+        with:
+          repository: tailscale/tailscale
+          ref: ${{ env.TAILSCALE_REF }}
+          path: tailscale-src
+          fetch-depth: 1
+
+      - name: Checkout community legacy-kernel patch repository
+        if: matrix.flavor == 'legacy-community'
+        uses: actions/checkout@v5
+        with:
+          repository: Rodmodrtf/freshtomato-tailscale-custom
+          ref: master
+          path: community-legacy
+          fetch-depth: 1
+
+      - name: Record source and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics dist out
+          {
+            echo "Flavor: ${{ matrix.flavor }}"
+            echo "Tailscale ref: $TAILSCALE_REF"
+            echo "Tailscale commit: $(git -C tailscale-src rev-parse HEAD)"
+            echo "Go: $(go version)"
+            echo "Target: GOOS=$GOOS GOARCH=$GOARCH GOARM=$GOARM CGO_ENABLED=$CGO_ENABLED"
+            echo "go.mod: $(awk '$1=="go" {print $2; exit}' tailscale-src/go.mod)"
+            uname -a
+          } | tee diagnostics/environment-${{ matrix.flavor }}.txt
+          go version > diagnostics/go-version-${{ matrix.flavor }}.txt
+
+      - name: Apply community Linux 2.6.36 patches
+        if: matrix.flavor == 'legacy-community'
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          PATCHES=("$GITHUB_WORKSPACE"/community-legacy/patches/*.patch)
+          [ ${#PATCHES[@]} -gt 0 ] || {
+            echo "ERROR: Community repository contains no patches/*.patch files." >&2
+            exit 1
+          }
+          : > "$GITHUB_WORKSPACE/diagnostics/community-patches.txt"
+          for patch in "${PATCHES[@]}"; do
+            echo "===== $(basename "$patch") =====" | tee -a "$GITHUB_WORKSPACE/diagnostics/community-patches.txt"
+            sha256sum "$patch" | tee -a "$GITHUB_WORKSPACE/diagnostics/community-patches.txt"
+            git apply --check "$patch"
+            git apply --3way "$patch"
+          done
+          git diff --binary > "$GITHUB_WORKSPACE/diagnostics/applied-community-legacy.patch"
+          git diff --stat | tee "$GITHUB_WORKSPACE/diagnostics/applied-community-legacy.stat.txt"
+          test -s "$GITHUB_WORKSPACE/diagnostics/applied-community-legacy.patch"
+
+      - name: Download and verify dependencies
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          go mod download
+          go mod verify
+
+      - name: Build ARM binaries
+        shell: bash
+        working-directory: tailscale-src
+        run: |
+          set -euo pipefail
+          BUILD_TAGS=""
+          if go list -tags=ts_include_cli ./cmd/tailscale >/dev/null 2>&1; then
+            BUILD_TAGS="-tags=ts_include_cli"
+          fi
+          go build $BUILD_TAGS -trimpath -buildvcs=true -ldflags="-s -w" \
+            -o "$GITHUB_WORKSPACE/dist/tailscale-${{ matrix.flavor }}" ./cmd/tailscale
+          go build -trimpath -buildvcs=true -ldflags="-s -w" \
+            -o "$GITHUB_WORKSPACE/dist/tailscaled-${{ matrix.flavor }}" ./cmd/tailscaled
+
+      - name: Verify ELF ARM static binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in tailscale tailscaled; do
+            file "dist/$name-${{ matrix.flavor }}" | tee "diagnostics/$name-${{ matrix.flavor }}.file.txt"
+            file "dist/$name-${{ matrix.flavor }}" | grep -qi 'ELF 32-bit'
+            file "dist/$name-${{ matrix.flavor }}" | grep -qi 'ARM'
+            if readelf -l "dist/$name-${{ matrix.flavor }}" | grep -q 'Requesting program interpreter'; then
+              echo "ERROR: $name is dynamically linked." >&2
+              exit 1
+            fi
+            go version -m "dist/$name-${{ matrix.flavor }}" \
+              | tee "diagnostics/$name-${{ matrix.flavor }}.gomod.txt"
+          done
+
+      - name: Package build
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="tailscale-1.104.4-go1.27.3-linux-armv${GOARM}-${{ matrix.flavor }}"
+          STAGE="out/$PKG"
+          mkdir -p "$STAGE"
+          cp "dist/tailscale-${{ matrix.flavor }}" "$STAGE/tailscale"
+          cp "dist/tailscaled-${{ matrix.flavor }}" "$STAGE/tailscaled"
+          cp diagnostics/environment-${{ matrix.flavor }}.txt "$STAGE/build-info.txt"
+          cp diagnostics/*-${{ matrix.flavor }}.*.txt "$STAGE/" 2>/dev/null || true
+          [ -f diagnostics/applied-community-legacy.patch ] && \
+            cp diagnostics/applied-community-legacy.patch "$STAGE/" || true
+          (cd "$STAGE" && sha256sum tailscale tailscaled > SHA256SUMS)
+          tar -C out -czf "out/$PKG.tar.gz" "$PKG"
+          sha256sum "out/$PKG.tar.gz" > "out/$PKG.tar.gz.sha256"
+
+      - name: Build complete Softcenter dual-storage installer
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/package-softcenter-dual.sh
+          scripts/package-softcenter-dual.sh \
+            "$GITHUB_WORKSPACE/dist" \
+            "${{ matrix.flavor }}" \
+            "$GOARM" \
+            "$GITHUB_WORKSPACE"
+
+      - name: Validate complete Softcenter package
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG=$(find out-softcenter -maxdepth 1 -name '*.tar.gz' -type f | head -n1)
+          test -n "$PKG"
+          rm -rf package-verify && mkdir package-verify
+          tar -xzf "$PKG" -C package-verify
+          test -x package-verify/tailscale/bin/tailscale
+          test -x package-verify/tailscale/bin/tailscaled
+          test -f package-verify/tailscale/webs/Module_tailscale.asp
+          for f in package-verify/tailscale/install.sh package-verify/tailscale/uninstall.sh package-verify/tailscale/scripts/*.sh; do sh -n "$f"; done
+          (cd package-verify/tailscale && sha256sum -c CORE-SHA256SUMS)
+
+      - name: Upload build and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: tailscale-v1.104.4-go1.27.3-armv${{ env.GOARM }}-${{ matrix.flavor }}
+          path: |
+            out/*.tar.gz
+            out/*.sha256
+            diagnostics/**
+            out-softcenter/*.tar.gz
+            out-softcenter/*.sha256
+          if-no-files-found: error
+          retention-days: 90
