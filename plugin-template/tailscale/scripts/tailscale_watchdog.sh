@@ -6,6 +6,7 @@ LOG=$TMP/status.log
 ST=/jffs/softcenter/scripts/tailscale_storage.sh
 CFG=/jffs/softcenter/scripts/tailscale_config.sh
 mkdir -p "$TMP"
+[ -x /jffs/softcenter/scripts/tailscale_logrotate.sh ] && /jffs/softcenter/scripts/tailscale_logrotate.sh >/dev/null 2>&1
 [ -d "$LOCK" ] && exit 0
 mkdir "$LOCK" 2>/dev/null || exit 0
 trap 'rmdir "$LOCK" 2>/dev/null' 0 1 2 3 15

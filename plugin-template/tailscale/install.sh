@@ -109,7 +109,11 @@ install_now(){
 		[ -f "${SWAPFILE}" ] || { echo_date "未检测到U盘Swap文件！"; exit_install 1; }
 		grep -q "${SWAPFILE}" /proc/swaps || /sbin/swapon "${SWAPFILE}" 2>/dev/null || exit_install 1
 		local USBFREE=$(df -k "${USBROOT}" | awk 'NR==2 {print $4}')
-		[ -n "${USBFREE}" ] && [ "${USBFREE}" -ge 100000 ] || { echo_date "U盘空间不足100000KB！"; exit_install 1; }
+		local CORE_KB=$(du -sk /tmp/${module}/bin 2>/dev/null | awk '{print $1}')
+		local USBNEED=$((CORE_KB + 65536))
+		[ "${USBNEED}" -ge 100000 ] || USBNEED=100000
+		echo_date "U盘可用空间：${USBFREE}KB，本安装包最低需要：${USBNEED}KB。"
+		[ -n "${USBFREE}" ] && [ "${USBFREE}" -ge "${USBNEED}" ] || { echo_date "U盘可用空间不足，停止安装！"; exit_install 1; }
 		mkdir -p "${USBTS}/bin" "${USBTS}/state" "${USBTS}/logs" "${USBTS}/backups/pre-v12-$(date +%Y%m%d-%H%M%S)"
 		if [ -f /tmp/${module}/bin/.combo ]; then
 			cp -f /tmp/${module}/bin/tailscale_combo "${USBTS}/bin/tailscale_combo" || exit_install 1

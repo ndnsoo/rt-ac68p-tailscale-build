@@ -48,6 +48,7 @@ tailscale_start(){
 		USBTS="${USBROOT}/tailscale"
 		SWAPFILE="${USBROOT}/tailscale-swapfile"
 		RUN_LOG=$(/jffs/softcenter/scripts/tailscale_storage.sh select) || return 1
+		[ -x /jffs/softcenter/scripts/tailscale_logrotate.sh ] && /jffs/softcenter/scripts/tailscale_logrotate.sh >/dev/null 2>&1
 		if [ -f /jffs/softcenter/configs/tailscale_usb_only ]; then
 			STATE_DIR="${USBTS}/state"
 		else
